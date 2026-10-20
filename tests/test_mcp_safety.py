@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, patch
@@ -23,6 +23,18 @@ STATUS = {"system_name": "web-01", "status": "healthy", "cpu_percent": 34.0,
 def result(value=None, **kwargs):
     return NS(content=[NS(type="text", text=json.dumps(STATUS if value is None else value))],
               is_error=False, **kwargs)
+
+
+class ObservedLock(asyncio.Lock):
+    """Signal that input validation has finished and a request is queued."""
+    def __init__(self):
+        super().__init__()
+        self.waiting = asyncio.Event()
+
+    async def acquire(self):
+        if self.locked():
+            self.waiting.set()
+        return await super().acquire()
 
 
 class BoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -155,6 +167,57 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", str(error))
         self.assertEqual(self.session.call_tool.await_count, 1)
 
+    async def test_nested_tool_arguments_are_snapshotted_before_waiting(self):
+        async def echo(name, arguments):
+            return result(arguments)
+        self.session.call_tool = echo
+        self.client._lock = ObservedLock()
+        arguments = {"filters": {"systems": ["web-01"]}}
+        async with self.client._lock:
+            task = asyncio.create_task(self.client.call_tool("echo", arguments))
+            await asyncio.wait_for(self.client._lock.waiting.wait(), 5)
+            arguments["filters"]["systems"].append("payments")
+            arguments["extra"] = True
+        self.assertEqual(await task, {"filters": {"systems": ["web-01"]}})
+
+    async def test_monitoring_response_uses_the_original_requested_target(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def delayed_response(name, arguments):
+            entered.set()
+            await release.wait()
+            return result()
+        self.session.call_tool = delayed_response
+        arguments = {"system_name": "web-01"}
+        task = asyncio.create_task(self.client.call_tool("get_monitoring_status", arguments))
+        await asyncio.wait_for(entered.wait(), 5)
+        arguments["system_name"] = "payments"
+        release.set()
+        self.assertEqual((await task)["system_name"], "web-01")
+
+    async def test_prompt_arguments_are_snapshotted_before_waiting(self):
+        async def echo(name, arguments):
+            return NS(messages=[NS(content=NS(type="text", text=arguments["symptom"]))])
+        self.session.get_prompt = echo
+        self.client._lock = ObservedLock()
+        arguments = {"system_name": "web-01", "symptom": "CPU"}
+        async with self.client._lock:
+            task = asyncio.create_task(self.client.get_prompt("incident_analysis_prompt", arguments))
+            await asyncio.wait_for(self.client._lock.waiting.wait(), 5)
+            arguments["symptom"] = "memory"
+        self.assertEqual(await task, "CPU")
+
+    async def test_request_failure_logs_metadata_without_payload_or_exception_text(self):
+        self.session.call_tool.side_effect = RuntimeError("secret server internals")
+        with self.assertLogs("agent.mcp_client", level="WARNING") as logs:
+            await self.assert_error("request_failed", self.client.call_tool,
+                                    "tool", {"token": "secret input"})
+        record = logs.records[0]
+        self.assertEqual((record.mcp_server, record.operation, record.error_type),
+                         ("ops", "call_tool", "RuntimeError"))
+        self.assertIsNone(record.sdk_error_code)
+        self.assertIsNone(record.exc_info)
+        self.assertNotIn("secret", repr(vars(record)))
+
 
 class TimeoutTests(unittest.IsolatedAsyncioTestCase):
     def test_timeout_configuration_requires_positive_finite_number(self):
@@ -241,7 +304,10 @@ class TimeoutTests(unittest.IsolatedAsyncioTestCase):
             error = exceptions.McpError(ErrorData(code=REQUEST_TIMEOUT, message="timed out"))
         client = MCPClient()
         client.sessions = {"ops": NS(call_tool=AsyncMock(side_effect=[error, result({"ok": True})]))}
-        self.assertEqual(await with_retry(client.call_tool, "tool", {}, base_delay=0), ({"ok": True}, 1))
+        with self.assertLogs("agent.mcp_client", level="WARNING") as logs:
+            self.assertEqual(await with_retry(client.call_tool, "tool", {}, base_delay=0), ({"ok": True}, 1))
+        self.assertEqual(logs.records[0].sdk_error_code, REQUEST_TIMEOUT)
+        self.assertEqual(logs.records[0].operation, "call_tool")
 
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -327,10 +393,16 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             yield NS(initialize=AsyncMock(side_effect=RuntimeError("startup secret")))
         client = MCPClient(server_scripts={"ops": Path("ops.py")})
         with patch("agent.mcp_client.stdio_client", transport), patch("agent.mcp_client.ClientSession", session):
-            with self.assertRaises(ValueError) as caught: await client.start()
+            with self.assertLogs("agent.mcp_client", level="WARNING") as logs:
+                with self.assertRaises(ValueError) as caught: await client.start()
             self.assertEqual(caught.exception.code, "startup_failed")
             self.assertNotIn("secret", str(caught.exception))
             self.assertNotIn("were closed", str(caught.exception))
+        self.assertEqual({record.operation for record in logs.records}, {"start", "startup_cleanup"})
+        self.assertTrue(all(record.cleanup_failed for record in logs.records))
+        startup = next(record for record in logs.records if record.operation == "start")
+        self.assertEqual(startup.mcp_server, "ops")
+        self.assertNotIn("secret", repr([vars(record) for record in logs.records]))
         self.assertEqual(client.sessions, {})
         self.assertIsNone(client._stack)
         await client.stop()
@@ -346,8 +418,12 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         client = MCPClient(server_scripts={"ops": Path("ops.py")})
         with patch("agent.mcp_client.stdio_client", transport), patch("agent.mcp_client.ClientSession", session):
             await client.start()
-            with self.assertRaises(ValueError) as caught: await client.stop()
+            with self.assertLogs("agent.mcp_client", level="WARNING") as logs:
+                with self.assertRaises(ValueError) as caught: await client.stop()
             self.assertNotIn("secret", str(caught.exception))
+        self.assertEqual(logs.records[0].operation, "stop")
+        self.assertTrue(logs.records[0].cleanup_failed)
+        self.assertNotIn("secret", repr(vars(logs.records[0])))
         self.assertEqual(client.sessions, {})
         self.assertIsNone(client._stack)
         await client.stop()
@@ -387,10 +463,38 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
             for name in ("ops", "docs"):
                 body = (f"import os\nfrom pathlib import Path\nPath({str(root / (name + '.pid'))!r}).write_text(str(os.getpid()))\n")
                 body += (f"import runpy\nrunpy.run_path({str(source)!r}, run_name='__main__')\n" if name == "ops"
-                         else "import time\ntime.sleep(10)\n")
+                         else "import time\ntime.sleep(60)\n")
                 (root / (name + ".py")).write_text(body)
-            client = MCPClient(server_scripts={name: root / (name + ".py") for name in ("ops", "docs")}, timeout_seconds=1)
-            with self.assertRaises(TimeoutError): await client.start()
+            client = MCPClient(server_scripts={name: root / (name + ".py") for name in ("ops", "docs")}, timeout_seconds=10)
+            real_timeout = asyncio.timeout
+            startup_deadline = None
+            ready = asyncio.Event()
+
+            def capture_startup_deadline(delay):
+                nonlocal startup_deadline
+                deadline = real_timeout(delay)
+                if startup_deadline is None:
+                    startup_deadline = deadline
+                return deadline
+
+            async def expire_after_children_start():
+                while not all((root / (name + ".pid")).exists() for name in ("ops", "docs")):
+                    await asyncio.sleep(0.01)
+                ready.set()
+                # Exercise the client's real timeout, after both processes exist.
+                # Ten seconds above is only a guard for a broken test setup.
+                startup_deadline.reschedule(asyncio.get_running_loop().time() + 0.1)
+
+            watcher = asyncio.create_task(expire_after_children_start())
+            try:
+                with patch("agent.mcp_client.asyncio.timeout", side_effect=capture_startup_deadline):
+                    with self.assertRaises(TimeoutError):
+                        await client.start()
+                self.assertTrue(ready.is_set(), "MCP children did not become ready before the setup deadline")
+            finally:
+                watcher.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watcher
             self.assertEqual(client.sessions, {})
             self.assertIsNone(client._stack)
             for name in ("ops", "docs"):
@@ -415,8 +519,11 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
             try:
                 client.timeout_seconds = 0.1
                 with self.assertRaises(TimeoutError): await client.call_tool("delayed", {"delay": 2})
+                client.timeout_seconds = 5
                 self.assertEqual(await client.call_tool("delayed", {"delay": 0}), {"ok": True})
-            finally: await client.stop()
+            finally:
+                client.timeout_seconds = 5
+                await client.stop()
 
 
 if __name__ == "__main__": unittest.main()
