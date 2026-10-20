@@ -158,7 +158,6 @@ async def research_node(state: AgentState, deps: SupervisorDeps) -> dict:
 
     async def run_one(idx: int) -> dict:
         task = tasks[idx]
-        await asyncio.sleep(0.35)   # 태스크당 고정 지연 — 병렬 효과를 실측하기 위함
         if task["kind"] == "monitoring":
             data, retries = await with_retry(
                 deps.mcp.call_tool, "get_monitoring_status",

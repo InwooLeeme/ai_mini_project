@@ -3,3 +3,23 @@
 session.db
 __pycache__/
 *.log
+# 보존본·측정 산출물은 로컬에 두고 안내 문서만 공유한다.
+/baseline/*
+!/baseline/README.md
+
+# 평가 코드·고정 입력·안내만 허용한다. 결과·로그·캡처는 제외한다.
+/eval/*
+!/eval/README.md
+!/eval/PREPARED_BASELINE.md
+!/eval/LANGSMITH_USAGE.md
+!/eval/REPOSITORY_USAGE.md
+!/eval/dataset.json
+!/eval/before-source-manifest.json
+!/eval/manual-review-template.csv
+!/eval/run_prepared_baseline.py
+!/eval/run_openai_baseline.py
+!/eval/openai_baseline_server.py
+!/eval/langsmith_usage.py
+
+# 사용자 규칙: 계획 문서는 커밋하지 않는다.
+/docs/superpowers/plans/

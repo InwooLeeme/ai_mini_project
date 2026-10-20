@@ -1,0 +1,238 @@
+{
+  "dataset_id": "incident-before-after",
+  "version": "1.0.0",
+  "language": "ko",
+  "purpose": "사용자가 선정한 8개 시나리오의 수정 전후 행동·검색·응답 품질·성능 비교",
+  "baseline_commit": "3fb307358af4d9451c3c3c2040b41f6a042cc1ef",
+  "scenario_count": 8,
+  "request_count_per_repetition": 9,
+  "recommended_repetitions": 3,
+  "measurement_status": "not_run",
+  "evaluation_policy": {
+    "gold_standard": "현재 구현의 출력이 아니라 동일하게 유지할 사용자 의도와 제공 데이터에 근거한 기대 행동",
+    "grade_values": ["pass", "fail", "unobservable", "not_applicable", "not_run"],
+    "session": "시나리오·반복마다 새로운 thread_id, 한 시나리오의 복수 턴만 같은 thread_id",
+    "turn_dependency": "앞선 턴 요청이 실패하면 의존하는 후속 턴은 blocked로 기록",
+    "numeric_grounding": "실제 호출에서 수집한 Tool 응답과 비교한다. cpu_base/memory_base나 답변 자체를 정답 수치로 사용하지 않는다.",
+    "retrieval": "시스템-런북 연결 평가와 전체 요청의 문서 집합 평가를 분리한다. 기존 이벤트에 시스템 연결이 없으면 연결 정확도는 unobservable이다.",
+    "clarification": "C05/C06은 첫 질문에 대한 확인 행동만 평가한다. 확인 후 진단 재개는 이 버전의 평가 범위 밖이다.",
+    "non_retrieval_cases": "C05~C08은 필요한 검색 정답이 없으므로 검색 점수를 1로 채우지 않고 not_applicable로 둔다. 불필요한 조회는 별도 실패로 기록한다.",
+    "claim_grounding": "관측 사실·알림에 포함된 수치·런북 기준값·가설을 구분한다.",
+    "sample_limit": "8개 고정 시나리오는 소규모 회귀 평가셋이며 일반적인 운영 정확도를 대표하지 않는다."
+  },
+  "cases": [
+    {
+      "id": "C01",
+      "category": "single_system",
+      "title": "결제 서비스 CPU 이상",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "payments-service 결제 응답이 느려지고 CPU가 치솟았어요, 원인 확인해주세요",
+          "expected_route": "incident",
+          "expected_behavior": "diagnose",
+          "required_monitoring_targets": ["payments-service"],
+          "allowed_monitoring_targets": ["payments-service"],
+          "required_runbooks_by_system": {"payments-service": ["cpu-spike"]},
+          "allowed_extra_runbooks_by_system": {},
+          "expected_retrieval_document_union": ["cpu-spike"],
+          "criteria": [
+            "payments-service의 모니터링 상태와 CPU 관련 알림을 근거로 답한다.",
+            "현재 CPU 수치를 인용하면 실제 Tool 응답과 일치한다. 알림의 CPU 91%와 현재 CPU 수치를 구분한다.",
+            "CPU 대응 절차와 추가 확인 사항을 제시한다.",
+            "실제 로그·배포 이력 없이 특정 배포나 코드가 확정 원인이라고 단정하지 않는다."
+          ],
+          "forbidden": ["auth-service로 임의 대체", "요청하지 않은 시스템을 근거 없이 추가 조회", "실제로 재시작·롤백을 수행했다고 주장"]
+        }
+      ]
+    },
+    {
+      "id": "C02",
+      "category": "multi_system",
+      "title": "게이트웨이에서 결제 서비스로 타임아웃",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "gateway-service에서 payments-service로 가는 요청이 타임아웃 나고 있어요",
+          "expected_route": "incident",
+          "expected_behavior": "diagnose",
+          "required_monitoring_targets": ["gateway-service", "payments-service"],
+          "allowed_monitoring_targets": ["gateway-service", "payments-service"],
+          "required_runbooks_by_system": {
+            "gateway-service": ["network-timeout"],
+            "payments-service": ["cpu-spike"]
+          },
+          "allowed_extra_runbooks_by_system": {"payments-service": ["high-latency"]},
+          "expected_retrieval_document_union": ["network-timeout", "cpu-spike"],
+          "criteria": [
+            "두 시스템을 모두 조사한다.",
+            "gateway의 upstream timeout·packet loss 알림과 payments의 CPU 이상을 각각 구분한다.",
+            "두 시스템의 관련성을 가능성으로 설명하고, CPU 이상이 타임아웃의 확정 원인이라고 단정하지 않는다.",
+            "각 시스템에 맞는 대응 절차를 제공한다."
+          ],
+          "forbidden": ["한 시스템의 수치를 다른 시스템에 연결", "한 런북으로 모든 시스템의 원인을 확정"]
+        }
+      ]
+    },
+    {
+      "id": "C03",
+      "category": "contradictory_evidence",
+      "title": "사용자 CPU 급증 주장과 정상 web-01 관측의 구분",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "web-01 CPU 급증, auth-service 커넥션 풀도 같이 확인해줘",
+          "expected_route": "incident",
+          "expected_behavior": "diagnose",
+          "required_monitoring_targets": ["web-01", "auth-service"],
+          "allowed_monitoring_targets": ["web-01", "auth-service"],
+          "required_runbooks_by_system": {"auth-service": ["high-latency"]},
+          "allowed_extra_runbooks_by_system": {"web-01": ["cpu-spike"]},
+          "expected_retrieval_document_union": ["high-latency"],
+          "criteria": [
+            "두 시스템을 모두 조사한다.",
+            "현재 web-01 데이터는 healthy·알림 없음이므로 CPU 급증을 현재 관측된 사실로 단정하지 않는다.",
+            "사용자 제보와 현재 스냅샷의 차이를 설명하고 필요한 시간대 확인을 제안한다.",
+            "auth-service의 p95 2.4s·기준 1.0s·connection pool 92% 알림을 관련 근거로 사용한다.",
+            "web-01 CPU 런북은 추가 조사 안내로 사용할 수 있지만 장애 확정 근거로 사용하지 않는다."
+          ],
+          "forbidden": ["web-01에서 CPU 90% 이상을 관측했다고 주장", "정상 시스템을 db-down으로 확정"]
+        }
+      ]
+    },
+    {
+      "id": "C04",
+      "category": "multi_system",
+      "title": "결제·캐시 저하의 공통 원인 가설",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "payments-service랑 cache-service 둘 다 저하됐는데 공통 원인이 있는지 분석해줘",
+          "expected_route": "incident",
+          "expected_behavior": "diagnose",
+          "required_monitoring_targets": ["payments-service", "cache-service"],
+          "allowed_monitoring_targets": ["payments-service", "cache-service"],
+          "required_runbooks_by_system": {
+            "payments-service": ["cpu-spike"],
+            "cache-service": ["memory-leak"]
+          },
+          "allowed_extra_runbooks_by_system": {},
+          "expected_retrieval_document_union": ["cpu-spike", "memory-leak"],
+          "criteria": [
+            "두 시스템을 모두 조사한다.",
+            "payments의 CPU 이상과 cache의 메모리 증가·heap near limit 알림을 구분한다.",
+            "공통 원인의 가능성과 이를 확정하기 위한 추가 근거를 설명한다.",
+            "시간상 동시 발생·공유 DB 장애·실제 메모리 누수를 수집하지 않은 확정 사실로 단정하지 않는다.",
+            "각 시스템의 대응 절차를 올바르게 연결한다."
+          ],
+          "forbidden": ["두 시스템 모두 CPU 장애라고 일반화", "로그·의존성·시계열 없이 공통 원인을 확정"]
+        }
+      ]
+    },
+    {
+      "id": "C05",
+      "category": "missing_target",
+      "title": "대상 시스템이 없는 로그인 지연",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "로그인 응답이 느려요, 원인 확인해주세요",
+          "expected_route": "incident",
+          "expected_behavior": "clarify_target",
+          "required_monitoring_targets": [],
+          "allowed_monitoring_targets": [],
+          "required_runbooks_by_system": {},
+          "allowed_extra_runbooks_by_system": {},
+          "expected_retrieval_document_union": [],
+          "criteria": [
+            "어느 시스템인지 사용자에게 확인한다. auth-service를 확인용 후보로 제시하는 것은 허용한다.",
+            "사용자가 대상을 확정하기 전 임의 시스템을 조회하지 않는다.",
+            "수집하지 않은 CPU·메모리·원인을 진단 결과로 제시하지 않는다."
+          ],
+          "forbidden": ["로그인이라는 단어만으로 auth-service 확정", "단순 인사 답변으로 종료"],
+          "baseline_static_risk": "현재 대상 폴백은 auth-service. 모델 라우팅에 따라 실제 실행 경로는 달라질 수 있다."
+        }
+      ]
+    },
+    {
+      "id": "C06",
+      "category": "unknown_target",
+      "title": "미등록 billing-service",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "billing-service 응답이 느려요",
+          "expected_route": "incident",
+          "expected_behavior": "clarify_target",
+          "required_monitoring_targets": [],
+          "allowed_monitoring_targets": [],
+          "required_runbooks_by_system": {},
+          "allowed_extra_runbooks_by_system": {},
+          "expected_retrieval_document_union": [],
+          "criteria": [
+            "billing-service가 현재 등록 목록에 없음을 알린다.",
+            "정확한 이름 또는 다른 등록 시스템인지 확인한다.",
+            "payments-service 등 후보를 제시할 수 있지만 확인 전 임의 조회하지 않는다.",
+            "unknown 응답의 0.0을 실제 CPU·메모리 관측으로 제시하지 않는다."
+          ],
+          "forbidden": ["auth-service나 payments-service로 자동 대체", "미등록 상태를 정상으로 해석"],
+          "baseline_static_risk": "실모델 target 보정은 auth-service로 폴백할 수 있으며 fake는 다른 경로를 가진다."
+        }
+      ]
+    },
+    {
+      "id": "C07",
+      "category": "chat",
+      "title": "인사와 자기소개",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "안녕, 너는 누구야?",
+          "expected_route": "chat",
+          "expected_behavior": "introduce",
+          "required_monitoring_targets": [],
+          "allowed_monitoring_targets": [],
+          "required_runbooks_by_system": {},
+          "allowed_extra_runbooks_by_system": {},
+          "expected_retrieval_document_union": [],
+          "criteria": ["인사하고 자신의 도우미 역할을 간결하게 설명한다.", "모니터링·런북 조사 없이 응답한다."],
+          "forbidden": ["장애 진단을 시작", "실제 사람이나 운영 담당자라고 사칭"]
+        }
+      ]
+    },
+    {
+      "id": "C08",
+      "category": "conversation_memory",
+      "title": "동일 세션의 이름 기억",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "제 이름은 민수입니다",
+          "expected_route": "chat",
+          "expected_behavior": "acknowledge_name",
+          "required_monitoring_targets": [],
+          "allowed_monitoring_targets": [],
+          "required_runbooks_by_system": {},
+          "allowed_extra_runbooks_by_system": {},
+          "expected_retrieval_document_union": [],
+          "criteria": ["민수라는 이름을 수용하는 자연스러운 답변을 한다.", "모니터링·런북 조회를 하지 않는다."],
+          "forbidden": ["다른 이름으로 호칭"]
+        },
+        {
+          "turn": 2,
+          "message": "제 이름이 뭐였죠?",
+          "depends_on_turn": 1,
+          "expected_route": "chat",
+          "expected_behavior": "recall_name",
+          "required_monitoring_targets": [],
+          "allowed_monitoring_targets": [],
+          "required_runbooks_by_system": {},
+          "allowed_extra_runbooks_by_system": {},
+          "expected_retrieval_document_union": [],
+          "criteria": ["같은 thread_id의 이전 메시지를 이용해 민수라고 정확히 답한다.", "모니터링·런북 조회를 하지 않는다."],
+          "forbidden": ["기억할 수 없다고 답변", "다른 이름을 답변"]
+        }
+      ]
+    }
+  ]
+}

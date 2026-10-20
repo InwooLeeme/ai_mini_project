@@ -1,0 +1,10 @@
+run_id,repetition,case_id,turn,execution_status,route_grade,target_grade,required_runbook_recall,returned_document_relevance,retrieval_grade,system_evidence_link_grade,numeric_grounding_grade,answer_behavior_grade,evidence_reference,reviewer_notes
+,1,C01,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C02,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C03,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C04,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C05,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C06,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C07,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C08,1,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,
+,1,C08,2,not_run,not_run,not_run,,,not_run,not_run,not_run,not_run,,

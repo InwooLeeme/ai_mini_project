@@ -9,6 +9,18 @@ Wave 1~15가 각각 증명한 패턴(싱글턴·MCP·SSE·라우팅·게이트·
 `fake`(결정론)/`ollama`(로컬 실모델)/`openai`(실제 API) 세 백엔드 중 아무거나 꽂을 수 있고,
 요청 한 건이 처리되는 전 과정은 LangSmith에 계층 트리로 기록·평가·피드백된다.
 
+## 성능 비교용 baseline
+
+현재 체크아웃은 원본에서 모니터링 난수와 조사 태스크의 인위적 지연을 제거하고,
+첫 MCP 호출의 강제 실패를 기본 비활성화한 baseline이다. 재시도·backoff와 진단 로직은
+유지한다. 원본 보존 위치·고정 수치·검증 방법은 [baseline 안내](../baseline/README.md)를 참조한다.
+기존 매뉴얼의 강제 재시도·병렬 지연 시연은 원본 동작을 설명하는 자료다.
+
+평가 코드·고정 데이터셋·테스트·안내 문서는 Git에 포함한다. 계획 문서·측정 결과·
+캡처·baseline 압축본과 복원용 메타데이터는 로컬에 보존한다.
+새 체크아웃의 테스트 방법과 별도 보존본이 필요한 Before 재측정 절차는
+[평가 코드 배포 안내](../eval/REPOSITORY_USAGE.md)를 참조한다.
+
 ## 주요 실행 방법
 
 **맨 처음 한 번만**: 이 폴더를 처음 받았다면(학생 배포 등) `.venv`부터 만든다.
@@ -213,7 +225,7 @@ all_total_vue/
 │   ├── fake_llm.py           # LLM_BACKEND=fake — 결정론적 fast/quality 모델 (route/plan/analyze/chat/write)
 │   ├── ollama_llm.py         # LLM_BACKEND=ollama — 로컬 실모델 백엔드
 │   ├── openai_llm.py         # LLM_BACKEND=openai — 실제 OpenAI API 백엔드
-│   ├── mcp_client.py          # MCP 멀티 서버(ops+docs) stdio 클라이언트 — find_resource_template/find_prompt로 서버 탐색 + 의도적 flaky 1회(재시도 데모)
+│   ├── mcp_client.py          # MCP 멀티 서버(ops+docs) stdio 클라이언트 — 서버 탐색 + 명시적으로 켤 수 있는 재시도 데모
 │   ├── retry.py              # Transient 전용 backoff 재시도
 │   └── session_store.py       # SQLite 세션 저장소
 │

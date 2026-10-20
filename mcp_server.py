@@ -4,12 +4,11 @@ Tool / Resource / Prompt 3대 capability를 모두 노출하는 실제 fastmcp �
 FastAPI 백엔드(server.py)가 lifespan에서 이 파일을 subprocess(stdio)로 1회 기동해
 프로세스가 살아 있는 동안 재사용한다 (Wave 1 싱글턴 + Wave 2 표준화의 결합).
 
-- Tool    get_monitoring_status : 호출마다 값이 달라지는 동적 조회 → Tool이 맞다
+- Tool    get_monitoring_status : baseline용 고정 모니터링 수치 조회
 - Resource runbook://incident-response/{incident_type} : URI로 식별되는 정적 문서
 - Prompt  incident_analysis_prompt : 여러 Tool을 조합하는 표준 진단 절차를 강제
 """
 import json
-import random
 from datetime import datetime
 from pathlib import Path
 
@@ -32,7 +31,7 @@ class SystemStatus(BaseModel):
 
 @mcp.tool()
 def get_monitoring_status(system_name: str) -> SystemStatus:
-    """지정된 시스템의 현재 모니터링 상태를 조회합니다 (호출마다 값이 달라지는 동적 Tool)."""
+    """고정 샘플의 모니터링 수치를 조회합니다. last_checked는 실제 조회 시각입니다."""
     monitoring_data = json.loads((DATA_DIR / "monitoring.json").read_text())
     if system_name not in monitoring_data:
         return SystemStatus(
@@ -42,12 +41,11 @@ def get_monitoring_status(system_name: str) -> SystemStatus:
             alerts=[f"System '{system_name}' not found in monitoring"],
         )
     data = monitoring_data[system_name]
-    jitter = random.uniform(-3.0, 8.0)
     return SystemStatus(
         system_name=system_name,
         status=data["status"],
-        cpu_percent=round(data["cpu_base"] + jitter, 1),
-        memory_percent=round(data["memory_base"] + jitter / 2, 1),
+        cpu_percent=round(data["cpu_base"], 1),
+        memory_percent=round(data["memory_base"], 1),
         last_checked=datetime.now().isoformat(timespec="microseconds"),
         alerts=data.get("alerts", []),
     )
