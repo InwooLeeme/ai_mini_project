@@ -178,7 +178,7 @@ def test_selector_schema_limits_ids_to_actual_candidates(monkeypatch):
         body = json.loads(request.content)
         seen.append(body)
         return httpx.Response(200, json={"message": {"content": json.dumps({
-            "answerable": False, "document_ids": [], "reason": "근거 없음"})}})
+            "answerable": False, "document_ids": [], "reason_code": "missing_procedure"})}})
     original = httpx.AsyncClient
     monkeypatch.setattr(module.httpx, "AsyncClient",
                         lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))

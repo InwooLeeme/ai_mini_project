@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 
 import httpx
-from langsmith import traceable
+from langsmith import get_current_run_tree, traceable
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -73,6 +73,43 @@ PLAN_INSTRUCTIONS = (
 )
 
 
+def _record_openai_usage(response: dict, requested_model: str) -> None:
+    """기존 LLM 추적에 실측 사용량을 기록한다. 상위 실행에 중복 기록하지 않는다."""
+    run = get_current_run_tree()
+    if run is None or run.run_type != "llm":
+        return
+    raw = response.get("usage")
+    raw = raw if isinstance(raw, dict) else {}
+    counts = [raw.get(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens")]
+    valid = (all(type(value) is int and value >= 0 for value in counts)
+             and counts[2] == counts[0] + counts[1])
+    metadata = {
+        "ls_provider": "openai", "ls_model_type": "chat",
+        "ls_model_name": response.get("model") or requested_model,
+        "requested_model": requested_model,
+        "provider_usage_status": "recorded" if valid else "missing_or_invalid",
+        # 기존 화면의 usd는 가상 단가 계산값이며, 실제 사용량 기반 비용과 구분한다.
+        "legacy_cost_usd_semantics": "simulated_cost_usd",
+    }
+    if valid:
+        usage = dict(zip(("input_tokens", "output_tokens", "total_tokens"), counts))
+        for source, destination, limit, mapping in (
+            ("prompt_tokens_details", "input_token_details", counts[0],
+             {"cached_tokens": "cache_read", "audio_tokens": "audio"}),
+            ("completion_tokens_details", "output_token_details", counts[1],
+             {"reasoning_tokens": "reasoning", "audio_tokens": "audio"}),
+        ):
+            details = raw.get(source)
+            if isinstance(details, dict):
+                mapped = {target: details[key] for key, target in mapping.items()
+                          if type(details.get(key)) is int and 0 <= details[key] <= limit}
+                if mapped:
+                    # 캐시·추론 토큰은 이미 합계에 포함되므로 다시 더하지 않는다.
+                    usage[destination] = mapped
+        metadata["usage_metadata"] = usage
+    run.add_metadata(metadata)
+
+
 class OpenAILLM:
     def __init__(self, model: str, usd_per_1k_tokens: float):
         self.name = f"openai:{model}"
@@ -98,8 +135,14 @@ class OpenAILLM:
         resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=120.0)
         resp.raise_for_status()
         data = resp.json()
+        # 출력 파싱 실패나 상위 JSON 보정 여부와 무관하게 실측 사용량을 보존한다.
+        _record_openai_usage(data, self.model)
         content = data["choices"][0]["message"]["content"]
-        tokens = data.get("usage", {}).get("total_tokens", 0)
+        raw_usage = data.get("usage")
+        tokens = raw_usage.get("total_tokens") if isinstance(raw_usage, dict) else None
+        # 기존 반환 계약의 기본값만 유지하며, 미측정값을 표준 추적의 0으로 기록하지 않는다.
+        if type(tokens) is not int or tokens < 0:
+            tokens = 0
         usage = {"model": self.name, "tokens": tokens,
                  "usd": round(tokens / 1000 * self.usd_per_1k, 6)}
         return content, usage

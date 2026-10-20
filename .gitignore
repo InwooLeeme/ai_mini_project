@@ -7,15 +7,10 @@ __pycache__/
 /baseline/*
 !/baseline/README.md
 
-# 평가 코드·고정 입력·안내만 허용한다. 결과·로그·캡처는 제외한다.
+# 평가 코드·고정 입력만 허용한다. 결과·로그·캡처·Markdown 문서는 제외한다.
 /eval/*
-!/eval/README.md
-!/eval/PREPARED_BASELINE.md
-!/eval/LANGSMITH_USAGE.md
-!/eval/REPOSITORY_USAGE.md
 !/eval/dataset.json
 !/eval/rag-dataset.json
-!/eval/RAG_EVALUATION.md
 !/eval/run_rag_evaluation.py
 !/eval/before-source-manifest.json
 !/eval/manual-review-template.csv
@@ -23,6 +18,7 @@ __pycache__/
 !/eval/run_openai_baseline.py
 !/eval/openai_baseline_server.py
 !/eval/langsmith_usage.py
+/eval/**/*.md
 
 # 사용자 규칙: 계획 문서는 커밋하지 않는다.
 /docs/superpowers/plans/
