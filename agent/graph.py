@@ -8,9 +8,7 @@ incident: plan(MCP Prompt 절차 반영) → gate(권위 게이트) → research
 모든 노드는 SupervisorDeps를 functools.partial로 주입받는 순수 함수다(Wave 13).
 각 노드는 @traceable로 LangSmith에 계층 트리로 기록된다.
 """
-import asyncio
 import json
-import time
 from functools import partial
 from pathlib import Path
 from typing import Any, TypedDict
@@ -20,7 +18,7 @@ from langgraph.graph import END, StateGraph
 from langsmith import traceable
 
 from .deps import SupervisorDeps
-from .retry import with_retry
+from .evidence import ResearchTask
 
 
 def _load_known_systems() -> set[str]:
@@ -136,7 +134,7 @@ async def gate_node(state: AgentState, deps: SupervisorDeps) -> dict:
 
 @traceable(name="research_node")
 async def research_node(state: AgentState, deps: SupervisorDeps) -> dict:
-    """Wave 15 가드 + Wave 10b 병렬 + Wave 9 재시도 + Wave 2 Tool/Resource 실호출."""
+    """대기 중 조사 작업을 수집기에 맡기고 성공한 결과를 상태·이벤트에 반영한다."""
     tasks = state["tasks"]
     research_indices = [i for i, t in enumerate(tasks)
                         if t["agent"] == "research" and t["status"] == "pending"]
@@ -145,44 +143,24 @@ async def research_node(state: AgentState, deps: SupervisorDeps) -> dict:
         return {"events": state["events"] +
                 [{"type": "ResearchSkipped", "reason": "pending research task 0개"}]}
 
+    batch = await deps.evidence_collector.collect([
+        ResearchTask(i, tasks[i]["kind"], tasks[i]["target"]) for i in research_indices
+    ])
+
+    # 전체 수집 성공 후에만 복사본을 갱신하므로 실패 시 기존 상태가 유지된다.
     retry_total = state.get("retry_count", 0)
-
-    # URI를 코드에 하드코딩하지 않는다. 여러 MCP 서버가 연결돼 있고 그중 어느 서버가
-    # "get_incident_runbook" resource를 제공하는지 모른다고 가정하고, 먼저 연결된
-    # 서버들을 조회(list)해 유효한 서버를 찾은 뒤에만 그 서버로 요청한다.
-    needs_runbook = any(tasks[i]["kind"] != "monitoring" for i in research_indices)
-    runbook_server = runbook_uri_template = None
-    if needs_runbook:
-        runbook_server, runbook_uri_template = await deps.mcp.find_resource_template(
-            "get_incident_runbook")
-
-    async def run_one(idx: int) -> dict:
-        task = tasks[idx]
-        if task["kind"] == "monitoring":
-            data, retries = await with_retry(
-                deps.mcp.call_tool, "get_monitoring_status",
-                {"system_name": task["target"]})
-            return {"idx": idx, "source": "monitoring", "data": data, "retries": retries}
-        uri = runbook_uri_template.format(incident_type=task["target"])
-        data = await deps.mcp.read_resource(uri, server=runbook_server)
-        return {"idx": idx, "source": "runbook", "data": data, "retries": 0}
-
-    started = time.perf_counter()
-    results = await asyncio.gather(*(run_one(i) for i in research_indices))
-    elapsed = round(time.perf_counter() - started, 2)
-
     new_tasks = [dict(t) for t in tasks]
     collected = list(state.get("collected", []))
     events = list(state["events"])
-    for r in results:
-        new_tasks[r["idx"]]["status"] = "done"
-        collected.append({"source": r["source"], "data": r["data"]})
-        retry_total += r["retries"]
-        events.append({"type": "TaskCompleted", "id": new_tasks[r["idx"]]["id"],
-                       "source": r["source"], "target": new_tasks[r["idx"]]["target"],
-                       "retries": r["retries"]})
+    for item in batch.items:
+        new_tasks[item.index]["status"] = "done"
+        collected.append({"source": item.source, "data": item.data})
+        retry_total += item.retries
+        events.append({"type": "TaskCompleted", "id": new_tasks[item.index]["id"],
+                       "source": item.source, "target": new_tasks[item.index]["target"],
+                       "retries": item.retries})
     return {"tasks": new_tasks, "collected": collected, "retry_count": retry_total,
-            "parallel_elapsed": elapsed, "events": events}
+            "parallel_elapsed": batch.elapsed, "events": events}
 
 
 # 수집된 모니터링 결과(상태·알림 문구)를 보고 어떤 runbook이 맞는지 고른다. LLM에게

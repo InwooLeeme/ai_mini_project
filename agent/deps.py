@@ -7,6 +7,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from .evidence import EvidenceCollector
+
 
 @dataclass
 class SupervisorDeps:
@@ -15,3 +17,4 @@ class SupervisorDeps:
     mcp: Any             # Wave 2  — MCP stdio 클라이언트 (Tool/Resource/Prompt)
     session_store: Any   # Wave 12 — SQLite 세션 저장소
     version: str         # Wave 14 — SUPERVISOR_VERSION (v1/v2)
+    evidence_collector: EvidenceCollector  # 조사 자료 수집 구현을 외부에서 주입

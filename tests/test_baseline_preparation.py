@@ -9,6 +9,7 @@ os.environ["LANGCHAIN_TRACING_V2"] = "false"
 os.environ["LANGSMITH_TRACING"] = "false"
 
 from agent.deps import SupervisorDeps
+from agent.evidence import MCPEvidenceCollector
 from agent.fake_llm import FastLLM, QualityLLM
 from agent.graph import build_graph, research_node
 from agent.mcp_client import MCPClient
@@ -78,7 +79,8 @@ class MonitoringTests(unittest.IsolatedAsyncioTestCase):
             deps = SupervisorDeps(
                 fast_llm=FastLLM("baseline-fast", 0.00015),
                 quality_llm=QualityLLM("baseline-quality", 0.005),
-                mcp=client, session_store=None, version="v2")
+                mcp=client, session_store=None, version="v2",
+                evidence_collector=MCPEvidenceCollector(client))
             result = await build_graph(deps).ainvoke({
                 "query": "payments-service CPU 급증 진단",
                 "thread_id": "baseline-smoke",
@@ -109,8 +111,9 @@ class ResearchAndRetryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(name, "get_monitoring_status")
             return {"system_name": arguments["system_name"]}
 
-        deps = SimpleNamespace(mcp=SimpleNamespace(call_tool=tool))
-        with patch("agent.graph.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        deps = SimpleNamespace(evidence_collector=MCPEvidenceCollector(
+            SimpleNamespace(call_tool=tool)))
+        with patch("agent.evidence.asyncio.sleep", new_callable=AsyncMock) as sleep:
             result = await research_node(state, deps)
         self.assertEqual([t["status"] for t in result["tasks"]], ["done", "done"])
         self.assertEqual(

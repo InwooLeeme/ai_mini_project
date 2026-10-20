@@ -1,0 +1,3 @@
+# 기존 실행 의존성과 검증에 사용한 pytest 버전
+-r requirements.txt
+pytest==9.1.1
