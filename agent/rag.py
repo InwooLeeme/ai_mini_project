@@ -184,13 +184,15 @@ class OllamaModels:
 class RunbookRetriever:
     """청크 벡터 검색 → 문서 중복 제거 → 근거 선택 → 원문 컨텍스트 반환."""
     @classmethod
-    async def create(cls, documents, embeddings: Embeddings, selector: EvidenceSelector):
+    async def create(cls, documents, embeddings: Embeddings, selector: EvidenceSelector,
+                     *, explicit_title_selection: bool = True):
         """작은 코퍼스는 서버 시작 시 한 번 색인한다."""
         if not documents or len({d.document_id for d in documents}) != len(documents):
             raise ValueError("비어 있거나 중복된 런북 코퍼스")
         self = cls()
         self.documents = {d.document_id: d for d in documents}
         self.embeddings, self.selector = embeddings, selector
+        self.explicit_title_selection = explicit_title_selection
         self.chunks = [c for d in documents for c in chunk_document(d)]
         inputs = [f"title: {c.text.splitlines()[0]} | text: {c.text}" for c in self.chunks]
         vectors = await embeddings.embed(inputs)
@@ -202,6 +204,37 @@ class RunbookRetriever:
         self.metadata = {"chunk_count": len(self.chunks), "top_k_documents": 3,
                          "context": "selected_full_document", "cache": "startup_memory_index"}
         return self
+
+    def _explicit_document(self, query, observations, ranked):
+        """실제 제목 하나를 지정한 조회만 허용한다. 증상 의미나 유사도는 추정하지 않는다."""
+        if len(observations) > 1:
+            return None
+        prefix = ""
+        if observations:
+            observation = observations[0]
+            # 같은 장애에 알림이 여러 개일 수 있다. 명시적 제목 조회의 범위는
+            # 아래 질문 전체 일치로 판단하며, 알림 개수로 장애 종류를 추정하지 않는다.
+            name = observation.get("system_name", "")
+            # 관측한 시스템 이름만 선택적 접두부로 인정하며 임의의 문장은 제거하지 않는다.
+            if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):
+                prefix = rf"(?:{re.escape(name)}(?:의)? )?"
+        query = " ".join(query.split())
+        matches = []
+        for document in self.documents.values():
+            heading = document.text.splitlines()[0]
+            if not heading.startswith("# Runbook: "):
+                continue
+            title = " ".join(heading.removeprefix("# Runbook: ").split())
+            if not title.endswith("대응 절차"):
+                continue
+            # 부분 일치는 부정·조건·추가 요청을 놓친다. 괄호 속 제목도 그대로 비교한다.
+            pattern = prefix + re.escape(title) + r"(?:를|을)? (?:찾아줘|찾아주세요|보여줘|보여주세요)[.!?]?"
+            if re.fullmatch(pattern, query, flags=re.IGNORECASE):
+                matches.append(document.document_id)
+        # 후보 밖 문서를 추가하거나 같은 제목의 여러 문서 중 하나를 임의 선택하지 않는다.
+        if len(matches) == 1 and matches[0] in ranked:
+            return matches[0]
+        return None
 
     @traceable(name="runbook_rag.search", run_type="retriever")
     async def search(self, query: str, observations: list[dict]) -> SearchResult:
@@ -222,8 +255,19 @@ class RunbookRetriever:
         ranked = sorted(scores, key=lambda doc_id: (-scores[doc_id], doc_id))[:3]
         candidates = [{"document_id": doc_id, "score": scores[doc_id]} for doc_id in ranked]
         ranked_at = time.perf_counter()
-        selection, usage = await self.selector.select(
-            query, observations, [self.documents[doc_id] for doc_id in ranked])
+        explicit_id = (self._explicit_document(query, observations, ranked)
+                       if self.explicit_title_selection else None)
+        if explicit_id is not None:
+            selection = {"answerable": True, "document_ids": [explicit_id],
+                         "reason": "질문이 실제 런북 제목 하나를 명시해 해당 문서를 선택했습니다."}
+            # 미측정 값이 아니라 호출 자체를 생략했다. LLM span이나 과거 토큰을 만들지 않는다.
+            usage = {"selection_method": "explicit_title", "selector_called": False,
+                     "selector_input_tokens": 0, "selector_output_tokens": 0,
+                     "selector_reason_code": "supported"}
+        else:
+            selection, usage = await self.selector.select(
+                query, observations, [self.documents[doc_id] for doc_id in ranked])
+            usage = {**usage, "selection_method": "model", "selector_called": True}
         selected_at = time.perf_counter()
         if not isinstance(selection, dict) or not isinstance(selection.get("answerable"), bool):
             raise ValueError("근거 선택 결과에 명시적인 판단이 없습니다")
