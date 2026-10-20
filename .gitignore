@@ -12,6 +12,8 @@ __pycache__/
 !/eval/dataset.json
 !/eval/rag-dataset.json
 !/eval/run_rag_evaluation.py
+!/eval/rag-diagnostic-dataset.json
+!/eval/compare_rag_inputs.py
 !/eval/before-source-manifest.json
 !/eval/manual-review-template.csv
 !/eval/run_prepared_baseline.py

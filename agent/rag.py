@@ -201,7 +201,8 @@ class RunbookRetriever:
         self.vectors = [normalize(v) for v in vectors]
         if len({len(v) for v in self.vectors}) != 1:
             raise ValueError("색인 임베딩 차원 불일치")
-        self.metadata = {"chunk_count": len(self.chunks), "top_k_documents": 3,
+        self.metadata = {"chunk_count": len(self.chunks), "top_k_documents_per_system": 3,
+                         "candidate_policy": "per_system_top3_union",
                          "context": "selected_full_document", "cache": "startup_memory_index"}
         return self
 
@@ -240,19 +241,46 @@ class RunbookRetriever:
     async def search(self, query: str, observations: list[dict]) -> SearchResult:
         """관련 문서가 없으면 빈 결과, 통신·형식 오류면 예외를 반환한다."""
         started = time.perf_counter()
-        text = query + "\n관측: " + json.dumps(observations, ensure_ascii=False)
-        vectors = await self.embeddings.embed(["task: search result | query: " + text])
+        groups = {}
+        for observation in observations:
+            name = observation.get("system_name")
+            if not isinstance(name, str) or not name.strip():
+                # 대상 불명 관측은 별도 그룹으로 보존하고 알려진 시스템의 검색을 유지한다.
+                # None을 써서 실제 시스템 이름과 충돌하지 않게 한다.
+                name = None
+            groups.setdefault(name, []).append(observation)
+        # 빈 관측도 질문 자체로 한 번 검색한다. 단일 그룹은 기존 입력과 동일하다.
+        search_groups = list(groups.items()) or [(None, observations)]
+        inputs = ["task: search result | query: " + query + "\n관측: "
+                  + json.dumps(group, ensure_ascii=False) for _, group in search_groups]
+        vectors = await self.embeddings.embed(inputs)
         embedded = time.perf_counter()
-        if len(vectors) != 1:
+        if len(vectors) != len(inputs):
             raise ValueError("질의 임베딩 개수 불일치")
-        vector = normalize(vectors[0])
-        if len(vector) != len(self.vectors[0]):
+        vectors = [normalize(vector) for vector in vectors]
+        if any(len(vector) != len(self.vectors[0]) for vector in vectors):
             raise ValueError("질의 임베딩 차원 불일치")
-        scores = {}
-        for chunk, embedding in zip(self.chunks, self.vectors):
-            score = sum(x*y for x, y in zip(vector, embedding))
-            scores[chunk.document_id] = max(scores.get(chunk.document_id, -1), score)
-        ranked = sorted(scores, key=lambda doc_id: (-scores[doc_id], doc_id))[:3]
+        scores, candidate_ids, retrieval_groups = {}, set(), []
+        for (name, group), vector in zip(search_groups, vectors):
+            system_scores = {}
+            for chunk, embedding in zip(self.chunks, self.vectors):
+                score = sum(x*y for x, y in zip(vector, embedding))
+                system_scores[chunk.document_id] = max(system_scores.get(chunk.document_id, -1), score)
+            system_ranked = sorted(
+                system_scores, key=lambda doc_id: (-system_scores[doc_id], doc_id))[:3]
+            candidate_ids.update(system_ranked)
+            # 후보 편입 근거는 추적 정보에만 남기고 선택 모델의 입력에는 추가하지 않는다.
+            retrieval_groups.append({
+                "system_name": name, "observation_count": len(group),
+                "candidates": [{"document_id": doc_id, "rank": rank,
+                                "score": system_scores[doc_id]}
+                               for rank, doc_id in enumerate(system_ranked, 1)],
+            })
+            for doc_id, score in system_scores.items():
+                scores[doc_id] = max(scores.get(doc_id, -1), score)
+        # 합집합을 다시 3개로 자르면 다른 시스템의 필수 문서가 재차 누락된다.
+        # 최고 유사도와 문서 ID로 정렬해 시스템 입력 순서에 따른 동점 순위 변화를 막는다.
+        ranked = sorted(candidate_ids, key=lambda doc_id: (-scores[doc_id], doc_id))
         candidates = [{"document_id": doc_id, "score": scores[doc_id]} for doc_id in ranked]
         ranked_at = time.perf_counter()
         explicit_id = (self._explicit_document(query, observations, ranked)
@@ -280,7 +308,10 @@ class RunbookRetriever:
                 or (selection["answerable"] and not ids)):
             raise ValueError("근거 선택 결과가 후보 계약을 위반했습니다")
         # 채택 순서는 모델 출력 순서 대신 검색 순위를 유지한다.
-        usage = {**usage, "timings_ms": {
+        usage = {**usage, "retrieval_query_count": len(inputs),
+                 "candidate_count": len(ranked),
+                 "retrieval_groups": retrieval_groups,
+                 "timings_ms": {
             "embedding": (embedded - started) * 1000,
             "ranking": (ranked_at - embedded) * 1000,
             "selection": (selected_at - ranked_at) * 1000,
