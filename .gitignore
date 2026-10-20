@@ -14,6 +14,9 @@ __pycache__/
 !/eval/LANGSMITH_USAGE.md
 !/eval/REPOSITORY_USAGE.md
 !/eval/dataset.json
+!/eval/rag-dataset.json
+!/eval/RAG_EVALUATION.md
+!/eval/run_rag_evaluation.py
 !/eval/before-source-manifest.json
 !/eval/manual-review-template.csv
 !/eval/run_prepared_baseline.py

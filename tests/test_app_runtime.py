@@ -186,6 +186,7 @@ def test_runtime_cleans_resources_on_success_and_failure(monkeypatch, failure):
             mcp_factory=lambda: mcp,
             llm_factory=models,
             session_store_factory=lambda: store,
+            retriever_factory=None,
         ) as bundle:
             assert bundle.deps.mcp is mcp
             assert bundle.deps.session_store is store
@@ -245,6 +246,7 @@ def test_real_runtime_serves_chat_and_stream_and_closes_mcp(tmp_path, monkeypatc
     app = server.create_app(runtime_factory=partial(
         runtime.create_runtime, llm_factory=fake_llms,
         session_store_factory=lambda: SqliteSessionStore(tmp_path / "session.db"),
+        retriever_factory=None,
     ))
     with TestClient(app) as client:
         mcp = app.state.deps.mcp
@@ -260,3 +262,60 @@ def test_real_runtime_serves_chat_and_stream_and_closes_mcp(tmp_path, monkeypatc
         assert client.get("/health").json()["instance_id"] == first_id
         assert client.get("/health").json()["creation_count"] == 1
     assert mcp.sessions == {}
+
+
+def test_rag_documents_reach_http_and_sse_with_sources():
+    from agent.rag import Document, SearchResult
+    class Retriever:
+        async def search(self, query, observations):
+            assert observations[0]["system_name"] == "web-01"
+            return SearchResult([
+                Document("cpu-spike", "runbook://incident-response/cpu-spike",
+                         "# CPU\n1. CPU 확인\n2. 부하 분산"),
+                Document("memory-leak", "runbook://incident-response/memory-leak",
+                         "# 메모리\n1. 추세 확인\n2. 힙 조사"),
+            ], [], "복합 증상 근거", {})
+    app, _, _ = make_test_app()
+    with TestClient(app) as client:
+        app.state.deps.runbook_retriever = Retriever()
+        response = client.post("/chat", json={"message": "web-01 장애 진단"}).json()
+        assert "runbook://incident-response/cpu-spike" in response["reply"]
+        assert "runbook://incident-response/memory-leak" in response["reply"]
+        events = decode_sse(client.get("/chat/stream", params={"message": "web-01 장애 진단"}))
+        retrieved = next(e for e in events if e["type"] == "RunbookRetrieved")
+        assert retrieved["document_ids"] == ["cpu-spike", "memory-leak"]
+        assert events[-1]["reply"] == response["reply"]
+
+
+def test_rag_empty_context_is_not_replaced_with_legacy_runbook():
+    from agent.rag import SearchResult
+    class Retriever:
+        async def search(self, query, observations):
+            return SearchResult([], [], "해당 절차 없음", {})
+    app, _, _ = make_test_app()
+    with TestClient(app) as client:
+        app.state.deps.runbook_retriever = Retriever()
+        events = decode_sse(client.get("/chat/stream", params={"message": "web-01 장애 진단"}))
+        assert "런북 근거를 찾지 못했습니다" in events[-1]["reply"]
+        assert "재시작" not in events[-1]["reply"]
+        assert not any(e["type"] == "TaskCompleted" and e["source"] == "runbook" for e in events)
+        assert len([e for e in events if e["type"] == "DraftWritten"]) == 1
+
+
+def test_rag_index_failure_cleans_mcp_and_store(monkeypatch):
+    mcp, closed = StubMCP(), []
+    store = SimpleNamespace(close=lambda: closed.append(True))
+    async def broken_index(client):
+        assert client is mcp
+        raise TimeoutError("임베딩 연결 실패")
+    monkeypatch.setenv("SUPERVISOR_VERSION", "v2")
+    async def exercise():
+        async with runtime.create_runtime(
+            mcp_factory=lambda: mcp, llm_factory=fake_llms,
+            session_store_factory=lambda: store, retriever_factory=broken_index,
+        ):
+            pytest.fail("색인 실패 후 실행되면 안 됩니다")
+    with pytest.raises(TimeoutError):
+        asyncio.run(exercise())
+    assert closed == [True]
+    assert [event for event, _ in mcp.lifecycle] == ["start", "stop"]

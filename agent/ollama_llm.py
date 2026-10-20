@@ -252,9 +252,11 @@ class OllamaQualityLLM(OllamaLLM):
                              f"CPU {d['cpu_percent']}%, 메모리 {d['memory_percent']}%, "
                              f"알림 {len(d['alerts'])}건 {d['alerts']}")
             elif c["source"] == "runbook":
-                facts.append(f"- runbook 발췌:\n{c['data'].strip()}")
+                facts.append(f"- runbook 출처: {c.get('uri', '(기존 문서)')}\n{c['data'].strip()}")
             elif c["source"] == "analysis":
                 facts.append(f"- 패턴 분석: {c['data'].strip()}")
+        system += (" 런북을 사용한 조치에는 제공된 출처 URI를 표시하라. "
+                   "각 문서의 조건과 임계값을 보존하고, 여러 문서의 서로 다른 절차를 임의로 섞지 마라.")
         user = f"## 사용자 요청\n{query}\n\n## 수집된 사실\n" + "\n".join(facts)
         if feedback:
             user += f"\n\n## 이전 초안에 대한 검증 반려 사유 (반드시 반영)\n{feedback}"

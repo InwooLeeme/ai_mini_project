@@ -121,6 +121,9 @@ const STEP_LABELS = {
       ? `모니터링 지표 확인 (시스템: ${e.target})`
       : `대응 매뉴얼(runbook) 조회 (장애유형: ${e.target})`) + (e.retries ? ' (재시도 성공)' : ''),
   ReplanCheck: e => e.is_sufficient ? null : `정보 부족 → 장애유형 "${e.target}"로 추가 조사`,
+  RunbookRetrieved: e => e.document_ids.length
+      ? `관련 런북 ${e.document_ids.length}개 확인: ${e.document_ids.join(', ')}`
+      : '관련 런북 근거 없음 → 추가 정보 확인 필요',
   DraftWritten: e => `답변 초안 작성 (시도 ${e.attempt})`,
   Validation: e => e.verdict === '합격' ? '검수 통과' : '검수 반려 → 다시 작성',
   Finalize: () => '최종 답변 완성',

@@ -11,6 +11,7 @@ from .fake_llm import FastLLM, QualityLLM
 from .graph import build_graph
 from .mcp_client import MCPClient
 from .session_store import SqliteSessionStore
+from .rag import build_retriever
 
 
 @dataclass
@@ -58,6 +59,7 @@ async def create_runtime(
     *, mcp_factory: Callable = MCPClient,
     llm_factory: Callable = build_llms,
     session_store_factory: Callable = SqliteSessionStore,
+    retriever_factory: Callable | None = build_retriever,
 ):
     """서버 수명당 한 번 조립하며, 조립·실행 실패 시에도 만든 자원을 정리한다.
 
@@ -75,6 +77,8 @@ async def create_runtime(
             session_store=store, version=os.environ.get("SUPERVISOR_VERSION", "v2"),
             evidence_collector=MCPEvidenceCollector(mcp),
         )
+        if deps.version == "v2" and retriever_factory is not None:
+            deps.runbook_retriever = await retriever_factory(mcp)
         graph = build_graph(deps) if deps.version == "v2" else None
         yield AgentRuntime(deps=deps, graph=graph, llm_backend=backend)
     finally:

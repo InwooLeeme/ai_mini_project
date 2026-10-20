@@ -64,6 +64,7 @@ class AgentState(TypedDict, total=False):
     last_prompt: str
     cost_usd: float
     events: list[dict]
+    retrieval: dict
 
 
 def _cost(state: AgentState, usage: dict) -> float:
@@ -192,7 +193,23 @@ def _classify_incident_type(collected: list[dict]) -> str:
 
 @traceable(name="replan_check_node")
 async def replan_check_node(state: AgentState, deps: SupervisorDeps) -> dict:
-    """Wave 7 — 1차 수집 결과 평가. runbook이 없으면 gap task만 추가해 재조사."""
+    """수집 관측으로 RAG 근거를 조회한다. 검색기 미주입 시 기존 비교 경로를 사용한다."""
+    retriever = getattr(deps, "runbook_retriever", None)
+    if retriever is not None:
+        observations = [c["data"] for c in state.get("collected", [])
+                        if c["source"] == "monitoring"]
+        result = await retriever.search(state["query"], observations)
+        documents = [{"source": "runbook", "data": doc.text,
+                      "document_id": doc.document_id, "uri": doc.uri}
+                     for doc in result.documents]
+        retrieval = {"document_ids": [d.document_id for d in result.documents],
+                     "candidates": result.candidates, "reason": result.reason,
+                     "usage": result.usage}
+        events = state["events"] + [{"type": "RunbookRetrieved", **retrieval}]
+        events.append({"type": "ReplanCheck", "round": 1, "is_sufficient": True,
+                       "reason": "retrieval_complete" if documents else "no_relevant_runbook"})
+        return {"collected": state.get("collected", []) + documents, "retrieval": retrieval,
+                "replan_rounds": 1, "events": events}
     has_runbook = any(c["source"] == "runbook" for c in state.get("collected", []))
     rounds = state.get("replan_rounds", 0)
     if has_runbook or rounds >= 1:
@@ -237,6 +254,14 @@ async def write_node(state: AgentState, deps: SupervisorDeps) -> dict:
     그대로 노출)."""
     attempt = state.get("validation_attempts", 0) + 1
     writer = get_stream_writer()
+    if "retrieval" in state and not state["retrieval"]["document_ids"]:
+        # 미조회는 생성 모델이 빈 근거를 임의 조치로 채우지 못하도록 명시적으로 처리한다.
+        draft = ("1) 현재 질문과 관측에 맞는 런북 근거를 찾지 못했습니다. "
+                 "2) 구체적인 증상·오류 메시지·발생 시점을 확인하고 해당 대응 문서를 확보해 주세요. "
+                 "3) 근거 확인 전에는 특정 원인이나 조치를 확정할 수 없습니다.")
+        writer({"type": "AnswerToken", "attempt": attempt, "delta": draft})
+        return {"draft": draft, "last_prompt": None, "events": state["events"] + [
+            {"type": "DraftWritten", "attempt": attempt, "length": len(draft)}]}
     draft, usage = await deps.quality_llm.write(
         state["query"], state.get("collected", []),
         attempt, state.get("validation_feedback"),

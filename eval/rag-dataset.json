@@ -1,0 +1,998 @@
+{
+  "dataset_id": "runbook-retrieval-regression",
+  "version": "1.0.0",
+  "language": "ko",
+  "purpose": "기존 규칙 기반 런북 선택과 RAG 검색의 고정 입력 비교",
+  "created_date": "2026-10-20",
+  "reference_commit": "1601a952ef7862b42b1a275d2f2c79ab0872afa8",
+  "measurement_status": "not_run",
+  "case_count": 24,
+  "scope": "검색 구성요소 평가. /chat 전체 흐름 및 실제 모니터링 조회 평가와 분리한다.",
+  "corpus": [
+    {
+      "id": "cpu-spike",
+      "path": "data/runbooks/cpu-spike.md",
+      "uri": "runbook://incident-response/cpu-spike",
+      "title": "Runbook: CPU 급증 대응 절차",
+      "sha256": "30796f7b5c1d0bc09acfb2518b240e3a07b04136e84fe41397802a3bf2bff22d"
+    },
+    {
+      "id": "db-down",
+      "path": "data/runbooks/db-down.md",
+      "uri": "runbook://incident-response/db-down",
+      "title": "Runbook: DB Down 대응 절차",
+      "sha256": "a2d4f4d3bc89984348976e9012518ceba32f389a35bf5ee7da4c19f7e1de9be5"
+    },
+    {
+      "id": "disk-full",
+      "path": "data/runbooks/disk-full.md",
+      "uri": "runbook://incident-response/disk-full",
+      "title": "Runbook: 디스크 용량 부족 대응 절차",
+      "sha256": "72b9d4f006490887ccba981531129e5a42c0d7b8c789208db391fdc5acc566c7"
+    },
+    {
+      "id": "high-latency",
+      "path": "data/runbooks/high-latency.md",
+      "uri": "runbook://incident-response/high-latency",
+      "title": "Runbook: 응답 지연(High Latency) 대응 절차",
+      "sha256": "0df4846e66993b0b9312327a3f51fe6de663d701c64c2c7c10a9e2c35e9e63a3"
+    },
+    {
+      "id": "memory-leak",
+      "path": "data/runbooks/memory-leak.md",
+      "uri": "runbook://incident-response/memory-leak",
+      "title": "Runbook: 메모리 누수(Memory Leak) 대응 절차",
+      "sha256": "085f00e9bba5effbb54e97a82d5f0b7032e027dac29816021729932a5e9a9ee1"
+    },
+    {
+      "id": "network-timeout",
+      "path": "data/runbooks/network-timeout.md",
+      "uri": "runbook://incident-response/network-timeout",
+      "title": "Runbook: 네트워크 타임아웃 대응 절차",
+      "sha256": "ed68d1bc775138e7e66cfb50698949856bf27d5e11afefff6e5826223e063596"
+    }
+  ],
+  "evaluation_policy": {
+    "input": "질문과 observations를 고정한다. 입력만 검색기에 제공하고 expected·evidence·rationale은 제공하지 않는다.",
+    "fixtures": "모든 observations는 합성 평가 입력이다. 실제 Tool 출력이나 운영 장애 관측으로 주장하지 않는다.",
+    "baseline_adapter": "observations를 source=monitoring, data=observation으로 감싸 기존 _classify_incident_type에 전달하고 선택한 MCP 런북을 읽는다. 기존 구현은 query를 사용하지 않는다는 차이를 기록한다. 이 단계에는 실행기가 없다.",
+    "after_adapter": "같은 query와 observations를 RAG 입력으로 제공한다. 정답 문서 ID·절차·답변은 검색 입력에 넣지 않는다.",
+    "document_unit": "문서 ID는 파일 stem. chunk 검색 결과는 문서 ID 기준 최초 등장 순서로 중복 제거한다.",
+    "positive_metrics": "retrieve 18건에서 문서 집합 recall과 precision, 전체 필수 문서 회수 여부를 집계한다. 빈 성공 검색의 recall/precision은 이 평가의 규약으로 0이다.",
+    "ranking_metrics": "순위가 제공되는 RAG에만 Recall@1 및 Recall@3을 별도 기록한다. 순위 없는 기존 선택 결과를 벡터 검색 순위로 표현하지 않는다.",
+    "negative_metrics": "abstain 5건과 clarify 1건의 최종 채택 문서가 없는지 별도로 평가한다. 내부 후보 반환과 채택 결과를 구분한다. 정답 문서가 없는 사례를 recall 분모에 넣지 않는다.",
+    "evidence_metric": "문서를 찾은 것과 필수 절차를 컨텍스트에 회수한 것을 분리한다. required_evidence의 의미와 조건이 보존되어야 하며 단순 키워드 일치는 불충분하다.",
+    "errors": "오류·미실행·관측 불가는 성공이나 올바른 미조회로 세지 않는다. 실행 수·오류 수·관측 가능 수를 함께 보고한다.",
+    "scope_of_answer": "expected_action은 검색 결과의 기대 행동이며 현재 구현 지원 여부와 별개다. 최종 답변의 확인 질문·근거 부족 안내는 추후 통합 평가에서 검증한다.",
+    "freeze": "전후 실행에서 같은 데이터셋 버전과 파일 해시, 코퍼스 해시를 기록한다. 변경하면 새 버전으로 양쪽 모두 다시 평가한다.",
+    "limitations": "개발자가 읽을 수 있는 소규모 수작업 회귀셋이다. 독립 블라인드 평가나 실제 운영 정확도 추정으로 주장하지 않는다. 조정에 쓰면 그 사실을 기록한다."
+  },
+  "cases": [
+    {
+      "id": "R01",
+      "category": "exact",
+      "input": {
+        "query": "payments-service CPU 급증 대응 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "payments-service",
+            "status": "degraded",
+            "alerts": [
+              "CPU usage remains above 90%"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "cpu-spike"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "cpu-spike",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 CPU 사용률과 최근 배포/트래픽 변화 시점을 확인한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. CPU가 90%를 넘고 지속되면 해당 인스턴스를 오토스케일링 그룹에서 한 대 더 띄워 부하를 분산한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "지속적인 CPU 과부하 확인 및 부하 분산 절차가 필요하다."
+    },
+    {
+      "id": "R02",
+      "category": "exact",
+      "input": {
+        "query": "cache-service 메모리 누수 대응 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "cache-service",
+            "status": "degraded",
+            "alerts": [
+              "memory usage climbing steadily; heap near limit"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "memory-leak"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "memory-leak",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 메모리 사용률 추세(시간에 따라 꾸준히 증가하는지)를 확인한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. 힙 덤프 또는 프로파일링 도구로 어떤 객체가 계속 쌓이는지 확인한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "증가 추세와 힙 분석 절차를 찾아야 한다. 누수 원인을 확정한 관측은 아니다."
+    },
+    {
+      "id": "R03",
+      "category": "exact",
+      "input": {
+        "query": "log-service 디스크 용량 부족 대응 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "log-service",
+            "status": "degraded",
+            "alerts": [
+              "disk usage 95% on /var/log"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "disk-full"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "disk-full",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status와 서버 디스크 사용률을 확인해 임계 수준(90% 이상)인지 판단한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 로그 파일, 임시 파일, 오래된 백업처럼 안전하게 지울 수 있는 항목부터 정리해 여유 공간을 즉시 확보한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "용량 임계 수준 확인과 안전한 정리 절차가 필요하다."
+    },
+    {
+      "id": "R04",
+      "category": "exact",
+      "input": {
+        "query": "auth-service 응답 지연과 커넥션 풀 포화 대응 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "auth-service",
+            "status": "degraded",
+            "alerts": [
+              "p95 latency 2.4s; connection pool 92% used"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "high-latency"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "high-latency",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 p95 지연시간과 커넥션 풀 사용률을 확인한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 커넥션 풀 사용률이 90%를 넘으면 풀 크기를 늘리거나 느린 쿼리/외부 호출에 타임아웃을 건다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "지연 및 풀 사용률 확인과 조건부 대응 절차가 필요하다."
+    },
+    {
+      "id": "R05",
+      "category": "exact",
+      "input": {
+        "query": "gateway-service 네트워크 타임아웃 대응 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "gateway-service",
+            "status": "degraded",
+            "alerts": [
+              "upstream timeout; network packet loss 3%"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "network-timeout"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "network-timeout",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 어떤 시스템 간 호출에서 타임아웃이 발생하는지 확인한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. DNS 해석 실패, 방화벽/보안그룹 변경, 로드밸런서 헬스체크 실패 중 최근 변경 사항이 있었는지 점검한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "호출 구간과 네트워크 설정 변경 확인 절차가 필요하다."
+    },
+    {
+      "id": "R06",
+      "category": "exact",
+      "input": {
+        "query": "web-01이 사용하는 DB down 대응 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "web-01",
+            "status": "down",
+            "alerts": [
+              "database down; database connection refused"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "db-down"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "db-down",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. 모니터링 알람으로 장애를 즉시 인지한다 (get_monitoring_status로 현재 상태 확인)."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 커넥션 풀/리플리케이션 상태를 점검하고 필요 시 failover 노드로 전환한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "평가용 DB 중단 상황이며 상태와 리플리케이션·failover 절차가 필요하다."
+    },
+    {
+      "id": "R07",
+      "category": "paraphrase",
+      "input": {
+        "query": "payments-service에서 연산 자원이 계속 꽉 차고 처리할 일이 밀려. 어떤 절차를 볼까?",
+        "observations": [
+          {
+            "system_name": "payments-service",
+            "status": "degraded",
+            "alerts": [
+              "프로세서 점유율이 구십 퍼센트를 넘는 상태로 지속됨"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "cpu-spike"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "cpu-spike",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 CPU 사용률과 최근 배포/트래픽 변화 시점을 확인한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. CPU가 90%를 넘고 지속되면 해당 인스턴스를 오토스케일링 그룹에서 한 대 더 띄워 부하를 분산한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "CPU라는 영문 키워드 없이 프로세서 과부하를 표현했다."
+    },
+    {
+      "id": "R08",
+      "category": "paraphrase",
+      "input": {
+        "query": "cache-service를 오래 켜 두면 사용 중인 저장 공간이 아니라 실행 메모리가 계속 늘어나. 어디를 확인해?",
+        "observations": [
+          {
+            "system_name": "cache-service",
+            "status": "degraded",
+            "alerts": [
+              "프로세스가 차지하는 실행 메모리가 여섯 시간 동안 꾸준히 증가함"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "memory-leak"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "memory-leak",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 메모리 사용률 추세(시간에 따라 꾸준히 증가하는지)를 확인한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. 힙 덤프 또는 프로파일링 도구로 어떤 객체가 계속 쌓이는지 확인한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "영문 memory·heap 없이 메모리 증가 추세를 표현했다."
+    },
+    {
+      "id": "R09",
+      "category": "paraphrase",
+      "input": {
+        "query": "log-service가 기록을 더 쓸 자리가 없대. 안전하게 공간 확보하는 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "log-service",
+            "status": "degraded",
+            "alerts": [
+              "로그 저장 볼륨에 남은 공간이 거의 없음"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "disk-full"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "disk-full",
+          "required_evidence": [
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 로그 파일, 임시 파일, 오래된 백업처럼 안전하게 지울 수 있는 항목부터 정리해 여유 공간을 즉시 확보한다."
+            },
+            {
+              "step": 4,
+              "line": 6,
+              "text": "4. 임시 조치로도 부족하면 볼륨을 확장하거나 추가 스토리지를 연결한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "영문 disk 없이 저장 공간 부족을 표현했다."
+    },
+    {
+      "id": "R10",
+      "category": "paraphrase",
+      "input": {
+        "query": "auth-service는 응답은 오는데 상위 5퍼센트 요청이 너무 오래 걸려. 대응 절차가 필요해.",
+        "observations": [
+          {
+            "system_name": "auth-service",
+            "status": "degraded",
+            "alerts": [
+              "백분위 95 응답 시간이 기준 일 초보다 긴 이 점 사 초"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "high-latency"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "high-latency",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 p95 지연시간과 커넥션 풀 사용률을 확인한다."
+            },
+            {
+              "step": 4,
+              "line": 6,
+              "text": "4. 5분 내 p95가 임계치(1.0s) 아래로 내려오지 않으면 캐시 계층 또는 읽기 복제본으로 트래픽을 분산한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "연결 실패가 아닌 응답 시간 증가다. 단계 4의 시간 조건을 보존해야 한다."
+    },
+    {
+      "id": "R11",
+      "category": "paraphrase",
+      "input": {
+        "query": "gateway-service에서 다른 서비스로 보낸 호출이 정해진 시간 안에 돌아오지 않아. 무엇부터 확인해?",
+        "observations": [
+          {
+            "system_name": "gateway-service",
+            "status": "degraded",
+            "alerts": [
+              "상대 서비스 호출 대기 만료와 패킷 손실이 발생함"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "network-timeout"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "network-timeout",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 어떤 시스템 간 호출에서 타임아웃이 발생하는지 확인한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. DNS 해석 실패, 방화벽/보안그룹 변경, 로드밸런서 헬스체크 실패 중 최근 변경 사항이 있었는지 점검한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "영문 timeout·network 없이 서비스 간 통신 실패를 표현했다."
+    },
+    {
+      "id": "R12",
+      "category": "paraphrase",
+      "input": {
+        "query": "web-01이 쓰는 데이터베이스가 멈췄고 접속도 안 돼. 대체 노드로 넘기는 절차가 있어?",
+        "observations": [
+          {
+            "system_name": "web-01",
+            "status": "down",
+            "alerts": [
+              "데이터베이스 서비스 중단 및 접속 거부"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "db-down"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "db-down",
+          "required_evidence": [
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 커넥션 풀/리플리케이션 상태를 점검하고 필요 시 failover 노드로 전환한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. 서비스 정상화 확인 후 원인 분석과 재발 방지 대책을 문서화한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "DB 중단과 조건부 전환·복구 확인 절차다. 상태 down은 양쪽 검색기에 동일하게 제공한다."
+    },
+    {
+      "id": "R13",
+      "category": "multi_symptom",
+      "input": {
+        "query": "payments-service는 CPU 과부하이고 cache-service는 메모리가 계속 늘어나. 두 대응 문서를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "payments-service",
+            "status": "degraded",
+            "alerts": [
+              "CPU remains above 90%"
+            ]
+          },
+          {
+            "system_name": "cache-service",
+            "status": "degraded",
+            "alerts": [
+              "memory usage climbing steadily"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "cpu-spike",
+        "memory-leak"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "cpu-spike",
+          "required_evidence": [
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. CPU가 90%를 넘고 지속되면 해당 인스턴스를 오토스케일링 그룹에서 한 대 더 띄워 부하를 분산한다."
+            }
+          ]
+        },
+        {
+          "document_id": "memory-leak",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 메모리 사용률 추세(시간에 따라 꾸준히 증가하는지)를 확인한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. 힙 덤프 또는 프로파일링 도구로 어떤 객체가 계속 쌓이는지 확인한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "서로 다른 두 증상에 대해 두 문서가 모두 필요하다. 공통 원인이 확정된 것은 아니다."
+    },
+    {
+      "id": "R14",
+      "category": "multi_symptom",
+      "input": {
+        "query": "gateway-service 호출 타임아웃과 payments-service CPU 과부하가 동시에 있어. 각각의 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "gateway-service",
+            "status": "degraded",
+            "alerts": [
+              "upstream timeout; packet loss"
+            ]
+          },
+          {
+            "system_name": "payments-service",
+            "status": "degraded",
+            "alerts": [
+              "CPU remains above 90%"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "network-timeout",
+        "cpu-spike"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "network-timeout",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 어떤 시스템 간 호출에서 타임아웃이 발생하는지 확인한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. DNS 해석 실패, 방화벽/보안그룹 변경, 로드밸런서 헬스체크 실패 중 최근 변경 사항이 있었는지 점검한다."
+            }
+          ]
+        },
+        {
+          "document_id": "cpu-spike",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 CPU 사용률과 최근 배포/트래픽 변화 시점을 확인한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. CPU가 90%를 넘고 지속되면 해당 인스턴스를 오토스케일링 그룹에서 한 대 더 띄워 부하를 분산한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "통신 장애와 CPU 과부하를 별개로 다뤄야 한다."
+    },
+    {
+      "id": "R15",
+      "category": "multi_symptom",
+      "input": {
+        "query": "auth-service의 지연·풀 포화와 log-service 디스크 부족 대응을 모두 찾아줘.",
+        "observations": [
+          {
+            "system_name": "auth-service",
+            "status": "degraded",
+            "alerts": [
+              "p95 latency 2.4s; connection pool 92%"
+            ]
+          },
+          {
+            "system_name": "log-service",
+            "status": "degraded",
+            "alerts": [
+              "disk usage 95%"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "high-latency",
+        "disk-full"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "high-latency",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 p95 지연시간과 커넥션 풀 사용률을 확인한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 커넥션 풀 사용률이 90%를 넘으면 풀 크기를 늘리거나 느린 쿼리/외부 호출에 타임아웃을 건다."
+            }
+          ]
+        },
+        {
+          "document_id": "disk-full",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status와 서버 디스크 사용률을 확인해 임계 수준(90% 이상)인지 판단한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 로그 파일, 임시 파일, 오래된 백업처럼 안전하게 지울 수 있는 항목부터 정리해 여유 공간을 즉시 확보한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "첫 키워드에 해당하는 문서 한 개만으로는 두 증상을 다룰 수 없다."
+    },
+    {
+      "id": "R16",
+      "category": "multi_symptom",
+      "input": {
+        "query": "cache-service 하나에서 메모리 증가와 로그 디스크 부족이 같이 보여. 각각 대응 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "cache-service",
+            "status": "degraded",
+            "alerts": [
+              "memory usage climbing steadily",
+              "disk usage 95%"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "memory-leak",
+        "disk-full"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "memory-leak",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status로 메모리 사용률 추세(시간에 따라 꾸준히 증가하는지)를 확인한다."
+            },
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. 힙 덤프 또는 프로파일링 도구로 어떤 객체가 계속 쌓이는지 확인한다."
+            }
+          ]
+        },
+        {
+          "document_id": "disk-full",
+          "required_evidence": [
+            {
+              "step": 1,
+              "line": 3,
+              "text": "1. get_monitoring_status와 서버 디스크 사용률을 확인해 임계 수준(90% 이상)인지 판단한다."
+            },
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 로그 파일, 임시 파일, 오래된 백업처럼 안전하게 지울 수 있는 항목부터 정리해 여유 공간을 즉시 확보한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "한 시스템에도 서로 다른 두 런북이 필요할 수 있다."
+    },
+    {
+      "id": "R17",
+      "category": "no_document",
+      "input": {
+        "query": "gateway-service TLS 인증서가 만료됐어. 인증서 갱신 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "gateway-service",
+            "status": "degraded",
+            "alerts": [
+              "TLS certificate expired"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "abstain",
+      "required_document_ids": [],
+      "allowed_extra_document_ids": [],
+      "evidence": [],
+      "label_rationale": "6개 문서에는 인증서 발급·갱신 절차가 없다. 일반 네트워크 문서로 갱신 근거가 있다고 판정하면 안 된다."
+    },
+    {
+      "id": "R18",
+      "category": "no_document",
+      "input": {
+        "query": "auth-service JWT 서명 키를 교체하는 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "auth-service",
+            "status": "degraded",
+            "alerts": [
+              "JWT signing key rotation required"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "abstain",
+      "required_document_ids": [],
+      "allowed_extra_document_ids": [],
+      "evidence": [],
+      "label_rationale": "토큰 키 교체 절차가 없다. 서비스 이름만 보고 지연 런북을 정답으로 삼지 않는다."
+    },
+    {
+      "id": "R19",
+      "category": "no_document",
+      "input": {
+        "query": "web-01 데이터베이스 백업을 어제 시점으로 복원하는 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "web-01",
+            "status": "healthy",
+            "alerts": [
+              "시점 복원 훈련 요청; 현재 데이터베이스는 정상 가동 중"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "abstain",
+      "required_document_ids": [],
+      "allowed_extra_document_ids": [],
+      "evidence": [],
+      "label_rationale": "DB Down 문서에는 시점 복원 절차가 없다. 관련 주제가 같아도 요청 작업을 뒷받침하지 못한다."
+    },
+    {
+      "id": "R20",
+      "category": "no_document",
+      "input": {
+        "query": "payments-service에서 결제가 중복 청구됐어. 중복 결제 환불 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "payments-service",
+            "status": "healthy",
+            "alerts": [
+              "결제 중복 청구 접수; 인프라 장애 관측 없음"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "abstain",
+      "required_document_ids": [],
+      "allowed_extra_document_ids": [],
+      "evidence": [],
+      "label_rationale": "6개 런북에는 결제 정합성·환불 절차가 없다."
+    },
+    {
+      "id": "R21",
+      "category": "boundary",
+      "input": {
+        "query": "auth-service에서 연결 풀만 92% 찼어. 풀 조정 기준이 있는 문서를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "auth-service",
+            "status": "degraded",
+            "alerts": [
+              "connection pool 92% used"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "high-latency"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "high-latency",
+          "required_evidence": [
+            {
+              "step": 2,
+              "line": 4,
+              "text": "2. 커넥션 풀 사용률이 90%를 넘으면 풀 크기를 늘리거나 느린 쿼리/외부 호출에 타임아웃을 건다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "커넥션 풀이라는 단어가 DB Down에도 있지만 90% 기준과 풀 조정은 응답 지연 문서에 있다."
+    },
+    {
+      "id": "R22",
+      "category": "boundary",
+      "input": {
+        "query": "cache-service의 heap이 한계에 가까워졌어. 누적 객체를 조사하는 절차를 찾아줘.",
+        "observations": [
+          {
+            "system_name": "cache-service",
+            "status": "degraded",
+            "alerts": [
+              "heap near limit"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "retrieve",
+      "required_document_ids": [
+        "memory-leak"
+      ],
+      "allowed_extra_document_ids": [],
+      "evidence": [
+        {
+          "document_id": "memory-leak",
+          "required_evidence": [
+            {
+              "step": 3,
+              "line": 5,
+              "text": "3. 힙 덤프 또는 프로파일링 도구로 어떤 객체가 계속 쌓이는지 확인한다."
+            },
+            {
+              "step": 4,
+              "line": 6,
+              "text": "4. 캐시 무제한 증가, 커넥션 미반환, 이벤트 리스너 중복 등록 같은 패턴이 최근 배포에 있었는지 점검한다."
+            }
+          ]
+        }
+      ],
+      "label_rationale": "heap 표현을 메모리 문서에 연결하고 객체 누적 원인은 추가 조사 대상으로 둔다."
+    },
+    {
+      "id": "R23",
+      "category": "boundary",
+      "input": {
+        "query": "web-01 CPU와 memory는 정상이고 disk도 여유가 있어. 현재 관측에 맞는 장애 대응 런북이 있어?",
+        "observations": [
+          {
+            "system_name": "web-01",
+            "status": "healthy",
+            "alerts": [
+              "CPU normal; memory stable; disk space sufficient; no incident observed"
+            ]
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "abstain",
+      "required_document_ids": [],
+      "allowed_extra_document_ids": [],
+      "evidence": [],
+      "label_rationale": "증상 키워드가 있어도 모두 정상이라는 관측이다. 장애 대응 문서를 강제로 선택하지 않는다."
+    },
+    {
+      "id": "R24",
+      "category": "boundary",
+      "input": {
+        "query": "web-01 상태가 이상한 것 같아. 어떤 장애 문서를 봐야 하지?",
+        "observations": [
+          {
+            "system_name": "web-01",
+            "status": "unknown",
+            "alerts": []
+          }
+        ]
+      },
+      "input_origin": "synthetic_retrieval_fixture",
+      "expected_action": "clarify",
+      "required_document_ids": [],
+      "allowed_extra_document_ids": [],
+      "evidence": [],
+      "label_rationale": "증상 정보가 없어 특정 런북을 정할 수 없다. 오류 메시지·증상·발생 시점 확인이 필요하다."
+    }
+  ]
+}
