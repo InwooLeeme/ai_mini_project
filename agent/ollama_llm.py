@@ -16,6 +16,7 @@ from pathlib import Path
 
 import httpx
 from langsmith import traceable
+from .analysis_policy import ANALYSIS_INSTRUCTIONS
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 
@@ -113,8 +114,8 @@ class OllamaLLM:
     async def _chat_stream(self, system: str, user: str, on_token=None) -> tuple[str, dict]:
         """사용자 대면 텍스트(최종 답변류) 전용 — Ollama NDJSON 스트림을 토큰 단위로
         받아 on_token(조각)을 즉시 호출해 SSE로 실시간 중계할 수 있게 한다. 분류/계획
-        등 JSON 스키마 출력(route/plan/analyze)은 부분 출력이 의미가 없어 그대로 _chat을
-        쓴다."""
+        등 JSON 스키마 출력(route/plan)은 _chat을 쓰고, 분석은 비차단 실행을 위해
+        콜백 없이 이 메서드에서 완성된 내용을 받는다."""
         payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system},
@@ -215,15 +216,13 @@ class OllamaFastLLM(OllamaLLM):
         return result, usage
 
     @traceable(run_type="llm", name="ollama_fast.analyze")
-    def analyze(self, collected: list[dict]) -> tuple[str, dict]:
-        system = ("당신은 ICT 운영 패턴 분석가다. 여러 시스템의 모니터링 결과를 비교해 "
-                  "공통 원인이 의심되는 패턴이 있는지 한두 문장으로 짧게 답하라. "
-                  "패턴이 없으면 '특이 패턴 없음'이라고만 답하라.")
+    async def analyze(self, collected: list[dict]) -> tuple[str, dict]:
+        """비차단 호출로 현재 관측의 비교 가설을 생성한다."""
         mon = [c["data"] for c in collected if c["source"] == "monitoring"]
         facts = "\n".join(
             f"- {d['system_name']}: 상태={d['status']}, CPU {d['cpu_percent']}%, "
             f"알림 {d['alerts']}" for d in mon) or "(모니터링 데이터 없음)"
-        return self._chat(system, facts)
+        return await self._chat_stream(ANALYSIS_INSTRUCTIONS, facts)
 
     @traceable(run_type="llm", name="ollama_fast.chat")
     async def chat(self, query: str, history: list[dict], on_token=None) -> tuple[str, dict]:

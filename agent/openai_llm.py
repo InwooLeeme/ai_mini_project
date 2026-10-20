@@ -25,6 +25,7 @@ from pathlib import Path
 
 import httpx
 from langsmith import get_current_run_tree, traceable
+from .analysis_policy import ANALYSIS_INSTRUCTIONS
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -117,7 +118,8 @@ class OpenAILLM:
         self.usd_per_1k = usd_per_1k_tokens
         self.api_key = os.environ.get("OPENAI_API_KEY", "")
 
-    def _chat(self, system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
+    def _request(self, system: str, user: str, json_mode: bool = False) -> tuple[dict, dict]:
+        """동기·비동기 호출이 동일한 모델·인증·입력 설정을 사용하도록 구성한다."""
         if not self.api_key:
             raise RuntimeError(
                 "OPENAI_API_KEY가 설정되지 않았습니다 — .env 또는 환경변수로 지정하세요."
@@ -132,7 +134,10 @@ class OpenAILLM:
             payload["response_format"] = {"type": "json_object"}
         headers = {"Authorization": f"Bearer {self.api_key}",
                    "Content-Type": "application/json"}
-        resp = httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=120.0)
+        return payload, headers
+
+    def _response(self, resp: httpx.Response) -> tuple[str, dict]:
+        """호출 방식과 관계없이 실제 사용량과 기존 반환 계약을 보존한다."""
         resp.raise_for_status()
         data = resp.json()
         # 출력 파싱 실패나 상위 JSON 보정 여부와 무관하게 실측 사용량을 보존한다.
@@ -146,6 +151,17 @@ class OpenAILLM:
         usage = {"model": self.name, "tokens": tokens,
                  "usd": round(tokens / 1000 * self.usd_per_1k, 6)}
         return content, usage
+
+    def _chat(self, system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
+        payload, headers = self._request(system, user, json_mode)
+        return self._response(httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=120.0))
+
+    async def _achat(self, system: str, user: str) -> tuple[str, dict]:
+        """분석 요청을 비차단 HTTP로 실행하고 취소 시 연결을 정리한다."""
+        payload, headers = self._request(system, user)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(OPENAI_URL, json=payload, headers=headers)
+            return self._response(response)
 
 
 class OpenAIFastLLM(OpenAILLM):
@@ -221,15 +237,13 @@ class OpenAIFastLLM(OpenAILLM):
         return result, usage
 
     @traceable(run_type="llm", name="openai_fast.analyze")
-    def analyze(self, collected: list[dict]) -> tuple[str, dict]:
-        system = ("당신은 ICT 운영 패턴 분석가다. 여러 시스템의 모니터링 결과를 비교해 "
-                  "공통 원인이 의심되는 패턴이 있는지 한두 문장으로 짧게 답하라. "
-                  "패턴이 없으면 '특이 패턴 없음'이라고만 답하라.")
+    async def analyze(self, collected: list[dict]) -> tuple[str, dict]:
+        """현재 관측의 비교 가설을 반환하며 RAG 실행을 막지 않는다."""
         mon = [c["data"] for c in collected if c["source"] == "monitoring"]
         facts = "\n".join(
             f"- {d['system_name']}: 상태={d['status']}, CPU {d['cpu_percent']}%, "
             f"알림 {d['alerts']}" for d in mon) or "(모니터링 데이터 없음)"
-        return self._chat(system, facts)
+        return await self._achat(ANALYSIS_INSTRUCTIONS, facts)
 
     @traceable(run_type="llm", name="openai_fast.chat")
     async def chat(self, query: str, history: list[dict], on_token=None) -> tuple[str, dict]:

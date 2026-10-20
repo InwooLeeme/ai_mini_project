@@ -15,6 +15,7 @@ def invoke(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "offline-test-key")
     client = Client(api_url="http://127.0.0.1:1", api_key="offline-test-key",
                     auto_batch_tracing=False, info={"version": "0"})
+    async_client = httpx.AsyncClient
 
     def call(raw_usage, method="route", content=None, status=200, broken_choices=False):
         runs = []
@@ -28,6 +29,9 @@ def invoke(monkeypatch):
             body["choices"] = []
         monkeypatch.setattr("agent.openai_llm.httpx.post", lambda url, **kwargs:
                             httpx.Response(status, json=body, request=httpx.Request("POST", url)))
+        monkeypatch.setattr("agent.openai_llm.httpx.AsyncClient", lambda **kwargs:
+                            async_client(transport=httpx.MockTransport(
+                                lambda request: httpx.Response(status, json=body)), **kwargs))
         fast = OpenAIFastLLM("gpt-4o-mini", 0.00015)
         quality = OpenAIQualityLLM("gpt-4o", 0.005)
         extra = {"on_end": runs.append}
@@ -39,7 +43,7 @@ def invoke(monkeypatch):
             if method == "plan":
                 return fast.plan("CPU 확인", "확인 절차", langsmith_extra=extra)
             if method == "analyze":
-                return fast.analyze([], langsmith_extra=extra)
+                return await fast.analyze([], langsmith_extra=extra)
             if method == "chat":
                 return await fast.chat("안녕", [], langsmith_extra=extra)
             return await quality.write("CPU 확인", [], 1, None, langsmith_extra=extra)

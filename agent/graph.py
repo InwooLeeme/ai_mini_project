@@ -2,12 +2,14 @@
 
 route → (chat 직행 | incident 파이프라인)
 incident: plan(MCP Prompt 절차 반영) → gate(권위 게이트) → research(가드+병렬+재시도)
-          → replan_check(부족 시 gap task 후 재조사) → analysis(needs_analysis=True일 때만
-          실제 실행) → write → validate(반려 시 재작성) → finalize
+          → replan_check(RAG·필요한 분석 병렬 실행 및 합류) → write
+          → validate(반려 시 재작성) → finalize
+검색기를 주입하지 않은 기존 비교 경로는 재조사 → analysis 순서를 유지한다.
 
 모든 노드는 SupervisorDeps를 functools.partial로 주입받는 순수 함수다(Wave 13).
 각 노드는 @traceable로 LangSmith에 계층 트리로 기록된다.
 """
+import asyncio
 import json
 from functools import partial
 from pathlib import Path
@@ -19,6 +21,7 @@ from langsmith import traceable
 
 from .deps import SupervisorDeps
 from .evidence import ResearchTask
+from .analysis_policy import comparison_requested
 
 
 def _load_known_systems() -> set[str]:
@@ -120,16 +123,18 @@ async def plan_node(state: AgentState, deps: SupervisorDeps) -> dict:
 
 @traceable(name="gate_node")
 async def gate_node(state: AgentState, deps: SupervisorDeps) -> dict:
-    """Wave 6 — 권위 게이트. needs_analysis=False인데 섞여 들어온 analysis task를
-    프롬프트가 아니라 코드로 강제 제거한다."""
+    """사용자의 명시적 비교 요청으로 분석 계획을 정규화한다. 관측 수는 수집 후 검사한다."""
     tasks = state["tasks"]
-    if not state.get("needs_analysis", False):
-        kept = [t for t in tasks if t["agent"] != "analysis"]
-        removed = len(tasks) - len(kept)
-    else:
-        kept, removed = tasks, 0
+    requested = comparison_requested(state["query"], KNOWN_SYSTEMS)
+    kept = [t for t in tasks if t["agent"] != "analysis"]
+    analysis_tasks = [t for t in tasks if t["agent"] == "analysis"]
+    removed = len(analysis_tasks) - (1 if requested and analysis_tasks else 0)
+    if requested:
+        # 모델이 필요한 작업을 빠뜨리거나 중복 생성해도 정확히 한 번 실행한다.
+        kept.append({**(analysis_tasks[0] if analysis_tasks else {"id": "task-analysis"}),
+                     "agent": "analysis", "kind": "pattern-analysis", "status": "pending"})
     event = {"type": "GateApplied", "removed_analysis_tasks": removed}
-    return {"tasks": kept, "gate_removed": removed,
+    return {"tasks": kept, "gate_removed": removed, "needs_analysis": requested,
             "events": state["events"] + [event]}
 
 
@@ -226,15 +231,27 @@ async def replan_check_node(state: AgentState, deps: SupervisorDeps) -> dict:
 
 @traceable(name="analysis_node")
 async def analysis_node(state: AgentState, deps: SupervisorDeps) -> dict:
-    """Wave 6 보완 — needs_analysis=True가 정당한 경우(모델의 자기모순이 아니라
-    실제로 패턴 비교가 필요하다고 판단한 경우)를 위한 실행 경로. gate가 살려둔
-    agent=='analysis' task가 있을 때만 수집된 monitoring 결과들을 비교 분석한다."""
+    """명시적 비교 요청과 서로 다른 두 시스템의 관측이 모두 있을 때만 분석한다."""
     tasks = state["tasks"]
     pending = [t for t in tasks if t["agent"] == "analysis" and t["status"] == "pending"]
-    if not pending:
-        return {"events": state["events"] +
-                [{"type": "AnalysisSkipped", "reason": "analysis task 0개"}]}
-    summary, usage = deps.fast_llm.analyze(state.get("collected", []))
+    observations = {}
+    for item in state.get("collected", []):
+        if item["source"] == "monitoring":
+            name = item["data"].get("system_name")
+            if isinstance(name, str) and name.strip():
+                observations[name] = item
+    reason = None
+    if not comparison_requested(state["query"], KNOWN_SYSTEMS):
+        reason = "explicit_comparison_not_requested"
+    elif len(observations) < 2:
+        reason = "insufficient_system_observations"
+    elif not pending:
+        reason = "no_pending_analysis"
+    if reason:
+        return {"tasks": [{**t, "status": "skipped"} if t in pending else dict(t) for t in tasks],
+                "needs_analysis": False,
+                "events": state["events"] + [{"type": "AnalysisSkipped", "reason": reason}]}
+    summary, usage = await deps.fast_llm.analyze(list(observations.values()))
     new_tasks = [dict(t) for t in tasks]
     for t in new_tasks:
         if t["agent"] == "analysis" and t["status"] == "pending":
@@ -243,6 +260,31 @@ async def analysis_node(state: AgentState, deps: SupervisorDeps) -> dict:
     event = {"type": "AnalysisCompleted", "length": len(summary)}
     return {"tasks": new_tasks, "collected": collected,
             "cost_usd": _cost(state, usage), "events": state["events"] + [event]}
+
+
+@traceable(name="prepare_evidence_node")
+async def prepare_evidence_node(state: AgentState, deps: SupervisorDeps) -> dict:
+    """두 읽기 작업을 겹쳐 실행하고, 성공한 결과만 한 번 상태에 합친다."""
+    if getattr(deps, "runbook_retriever", None) is None:
+        return await replan_check_node(state, deps)
+    jobs = [asyncio.create_task(replan_check_node(state, deps)),
+            asyncio.create_task(analysis_node(state, deps))]
+    try:
+        retrieval, analysis = await asyncio.gather(*jobs)
+    except BaseException:
+        # gather는 한쪽 실패 시 다른 쪽을 자동 정리하지 않는다. 요청 취소도 같은 정책이다.
+        for job in jobs:
+            job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
+        raise
+    # 노드는 원본 상태를 읽고 새 목록을 반환한다. 공통 접두부는 한 번만 보존한다.
+    collected = state.get("collected", [])
+    events = state["events"]
+    return {
+        **retrieval, **analysis,
+        "collected": retrieval["collected"] + analysis.get("collected", collected)[len(collected):],
+        "events": retrieval["events"] + analysis["events"][len(events):],
+    }
 
 
 @traceable(name="write_node")
@@ -301,6 +343,8 @@ def _after_route(state: AgentState) -> str:
 
 
 def _after_replan_check(state: AgentState) -> str:
+    if "retrieval" in state:
+        return "write"  # RAG 경로는 분석까지 합류했으므로 다시 실행하지 않는다.
     last = state["events"][-1]
     return "analysis" if last.get("is_sufficient") else "research"
 
@@ -317,7 +361,7 @@ def build_graph(deps: SupervisorDeps):
     g.add_node("plan", node(plan_node))
     g.add_node("gate", node(gate_node))
     g.add_node("research", node(research_node))
-    g.add_node("replan_check", node(replan_check_node))
+    g.add_node("replan_check", node(prepare_evidence_node))
     g.add_node("analysis", node(analysis_node))
     g.add_node("write", node(write_node))
     g.add_node("validate", node(validate_node))
@@ -331,7 +375,7 @@ def build_graph(deps: SupervisorDeps):
     g.add_edge("gate", "research")
     g.add_edge("research", "replan_check")
     g.add_conditional_edges("replan_check", _after_replan_check,
-                            {"analysis": "analysis", "research": "research"})
+                            {"analysis": "analysis", "research": "research", "write": "write"})
     g.add_edge("analysis", "write")
     g.add_edge("write", "validate")
     g.add_conditional_edges("validate", _after_validate,

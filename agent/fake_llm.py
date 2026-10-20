@@ -51,13 +51,13 @@ class FastLLM(FakeLLM):
         return result, self._usage(query + procedure_prompt, str(result))
 
     @traceable(run_type="llm", name="fast_llm.analyze")
-    def analyze(self, collected: list[dict]) -> tuple[str, dict]:
+    async def analyze(self, collected: list[dict]) -> tuple[str, dict]:
         """Wave 6 보완 — 여러 시스템의 monitoring 결과 사이에 공통 패턴이 있는지 비교."""
         mon = [c["data"] for c in collected if c["source"] == "monitoring"]
         degraded = [d["system_name"] for d in mon if d.get("status") != "healthy"]
         if len(degraded) >= 2:
-            summary = (f"{', '.join(degraded)} 복수 시스템이 동시에 저하됨 — "
-                       f"공유 의존성 등 공통 원인이 의심됨")
+            summary = (f"{', '.join(degraded)}의 현재 관측이 모두 저하 상태입니다. "
+                       "공유 의존성 문제는 가설이며, 로그·의존성·시계열 확인이 필요합니다.")
         elif degraded:
             summary = f"{degraded[0]}만 단독 저하 — 연관 시스템은 정상, 국소 이슈로 추정"
         else:
