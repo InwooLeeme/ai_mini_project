@@ -146,8 +146,13 @@ def main(argv=None):
                     langsmith=trace_public, planned_requests=len(plan), actual_billed_usd=None,
                     recorded_requests=0, source_sha256=snapshot_sources(ROOT, output / "source"),
                     runner_sha256={str(p.relative_to(ROOT)): sha256(p) for p in (ROOT / "evaluation").glob("*.py")},
-                    rag={"embedding_model": config.get("RAG_EMBEDDING_MODEL", "embeddinggemma:300m"),
-                         "selection_model": config.get("RAG_SELECTION_MODEL", "qwen3:8b")},
+                    rag=({"backend": "openai",
+                          "embedding_model": config.get("RAG_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+                          "selection_model": config.get("RAG_OPENAI_SELECTION_MODEL", "gpt-4o-mini")}
+                         if config.get("RAG_BACKEND") == "openai" else
+                         {"backend": "ollama",
+                          "embedding_model": config.get("RAG_EMBEDDING_MODEL", "embeddinggemma:300m"),
+                          "selection_model": config.get("RAG_SELECTION_MODEL", "qwen3:8b")}),
                     feature_scope="current checkout; content validation enabled; specialist/log tools not implemented")
     write_json(output / "manifest.json", manifest)
     shutil.copyfile(args.before_dir / "dataset.json", output / "dataset.json")
@@ -169,7 +174,8 @@ def main(argv=None):
                    OPENAI_VALIDATOR_MODEL=manifest["requested_validator_model"],
                    PYTHONDONTWRITEBYTECODE="1", PYTHON_DOTENV_DISABLED="1")
         env.update(trace_env)
-        for name in ("RAG_OLLAMA_URL", "RAG_EMBEDDING_MODEL", "RAG_SELECTION_MODEL"):
+        for name in ("RAG_BACKEND", "RAG_OLLAMA_URL", "RAG_EMBEDDING_MODEL", "RAG_SELECTION_MODEL",
+                     "RAG_OPENAI_EMBEDDING_MODEL", "RAG_OPENAI_SELECTION_MODEL"):
             if config.get(name):
                 env[name] = config[name]
         with (output / "server.log").open("x") as log:
