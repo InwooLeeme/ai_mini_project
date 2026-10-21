@@ -76,6 +76,12 @@
   }
   button:disabled { background: #3a3a52; cursor: default; }
   .validation-label { font-size: 12px; color: #e5c77a; margin-bottom: 6px; }
+  .validation-label.passed, .validation-label.limited, .validation-label.rejected {
+    display: inline-block; padding: 2px 8px; border-radius: 6px; font-weight: 600;
+  }
+  .validation-label.passed { color: #7ee787; background: rgba(126, 231, 135, 0.12); }
+  .validation-label.limited { color: #f0a35e; background: rgba(240, 163, 94, 0.14); }
+  .validation-label.rejected { color: #f47067; background: rgba(244, 112, 103, 0.14); }
   .target-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .target-choices button { padding: 7px 10px; font-size: 13px; }
 </style>
@@ -95,7 +101,7 @@
       </div>
 
       <div v-else-if="item.kind === 'agent'" class="row agent">
-        <div class="bubble"><div v-if="item.validationLabel" class="validation-label" role="status">{{ item.validationLabel }}</div>{{ item.text }}
+        <div class="bubble"><div v-if="item.validationLabel" class="validation-label" :class="item.validationStatus" role="status">{{ item.validationLabel }}</div>{{ item.text }}
           <div v-if="item.choices?.length" class="target-choices" aria-label="진단 대상 시스템 선택">
             <button v-for="target in item.choices" :key="target" type="button"
                     :disabled="sending" @click="chooseTarget(target)">{{ target }}</button>
@@ -204,6 +210,7 @@ createApp({
         if (e.type === 'Validation' && streamItem) {
           streamItem.validationLabel = e.status === 'passed' ? '검증 완료'
             : e.status === 'limited' ? '검증 미완료 · 제한된 답변으로 전환' : '검증 반려 · 이 초안은 사용하지 마세요';
+          streamItem.validationStatus = e.status === 'passed' || e.status === 'limited' ? e.status : 'rejected';
         }
 
         if (e.type === 'FinalAnswer') {
@@ -214,6 +221,7 @@ createApp({
           streamItem.text = e.reply;   // 토큰 합산 결과와 서버의 최종 텍스트를 일치시킨다
           streamItem.validationLabel = e.validation_status === 'limited' ? '제한된 답변 · 원인과 조치 미확정'
             : e.validation_status === 'passed' ? '검증 완료' : '';
+          streamItem.validationStatus = e.validation_status;
           streamItem.choices = choices;
           if (e.prompt) log.value.push({ id: nextId++, kind: 'prompt', text: e.prompt });
           streamItem = null;
