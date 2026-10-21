@@ -237,10 +237,12 @@ createApp({
     let nextId = 0;
 
     // fake 백엔드의 답도 겉보기엔 정상 답변이라, 실제 모델인지 테스트 모드인지 헤더에서 구분해 준다.
+    // 모델 이름은 "openai:gpt-4o"처럼 백엔드 접두사가 붙어 오므로, 칩 앞의 백엔드명과 겹치지 않게 뗀다.
+    const modelName = name => name.replace(/^[^:]+:/, '');
     fetch('/health').then(r => r.json()).then(h => {
       backend.value = h.llm_backend === 'fake'
         ? { state: 'test', text: '테스트 모드 · 가짜 응답' }
-        : { state: 'real', text: `${BACKEND_NAMES[h.llm_backend] ?? h.llm_backend} · ${h.fast_llm} / ${h.quality_llm}` };
+        : { state: 'real', text: `${BACKEND_NAMES[h.llm_backend] ?? h.llm_backend} · ${modelName(h.fast_llm)} / ${modelName(h.quality_llm)}` };
     }).catch(() => {
       backend.value = { state: 'offline', text: '서버 연결 안 됨' };
     });
