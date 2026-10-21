@@ -150,7 +150,6 @@ async def chat_stream(request: Request, message: str, thread_id: str = "default"
             seen = 0
             final = ""
             validation_status = None
-            last_prompt = None   # finalize까지 살아남은 최종 write/chat 호출의 실제 프롬프트
             # stream_mode를 리스트로 주면 (mode, payload) 튜플이 나온다 — "updates"는
             # 노드가 끝날 때마다의 상태 델타, "custom"은 write_node/chat_answer_node가
             # get_stream_writer()로 실행 중에 즉시 흘려보내는 토큰(AnswerToken) 이벤트다.
@@ -173,9 +172,7 @@ async def chat_stream(request: Request, message: str, thread_id: str = "default"
                         validation_status = delta["validation_status"]
                     if delta.get("final"):
                         final = delta["final"]
-                    if delta.get("last_prompt"):
-                        last_prompt = delta["last_prompt"]
-            answer = {'type': 'FinalAnswer', 'reply': final, 'prompt': last_prompt}
+            answer = {'type': 'FinalAnswer', 'reply': final}
             if validation_status is not None:
                 answer['validation_status'] = validation_status
             yield f"data: {json.dumps(answer, ensure_ascii=False)}\n\n"

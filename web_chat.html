@@ -110,9 +110,6 @@
   }
   .row.agent .md code { background: var(--surface-hover); }   /* 말풍선 배경과 구분되게 한 단계 밝게 */
   .row.agent .md pre code { background: none; }
-  .row.agent.rejected .bubble {
-    padding: 12px 16px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted);
-  }
   .md { white-space: normal; }   /* 줄바꿈은 marked(breaks)가 <br>로 바꿔주므로 pre-wrap을 끈다 */
   .md > :first-child { margin-top: 0; }
   .md > :last-child { margin-bottom: 0; }
@@ -129,18 +126,18 @@
   .md table { border-collapse: collapse; margin: 0 0 12px; }
   .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
   .md a { color: var(--link); }
-  .steps, .prompt-box {
+  .steps {
     flex-shrink: 0;   /* #log가 스크롤 영역이 되면서(min-height:0) <details>가 flex
                          자식으로서 내용 없이 찌그러지는 걸 방지 */
     font-size: 13px; color: var(--muted);
   }
-  .steps summary, .prompt-box summary {
+  .steps summary {
     display: inline-block; cursor: pointer; user-select: none; list-style: none;
   }
-  .steps summary:hover, .prompt-box summary:hover { color: var(--text); }
-  .steps summary::-webkit-details-marker, .prompt-box summary::-webkit-details-marker { display: none; }
-  .steps summary::before, .prompt-box summary::before { content: "▸ "; }
-  .steps[open] summary::before, .prompt-box[open] summary::before { content: "▾ "; }
+  .steps summary:hover { color: var(--text); }
+  .steps summary::-webkit-details-marker { display: none; }
+  .steps summary::before { content: "▸ "; }
+  .steps[open] summary::before { content: "▾ "; }
   .step-list {
     display: flex; flex-direction: column; gap: 4px;
     margin: 8px 0 0 5px; padding-left: 14px; border-left: 1px solid var(--border);
@@ -151,13 +148,6 @@
   .thinking { flex-shrink: 0; font-size: 13px; color: var(--muted); animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.4; } }
   @media (prefers-reduced-motion: reduce) { .thinking { animation: none; } }
-  .prompt-box { margin-top: -12px; }
-  .prompt-box pre {
-    margin: 8px 0 0; padding: 12px 14px; border-radius: 12px;
-    background: var(--code-bg); color: var(--text); white-space: pre-wrap; word-break: break-word;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
-    max-height: 320px; overflow-y: auto;
-  }
   form { padding: 0 var(--gutter) 12px; }
   .composer {
     display: flex; align-items: flex-end; gap: 8px;
@@ -178,12 +168,11 @@
   .send:disabled { background: var(--surface-hover); color: var(--muted); }
   .hint { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--muted); }
   .validation-label { font-size: 12px; color: var(--draft); margin-bottom: 8px; }
-  .validation-label.passed, .validation-label.limited, .validation-label.rejected {
+  .validation-label.passed, .validation-label.limited {
     display: inline-block; padding: 2px 8px; border-radius: 6px; font-weight: 600;
   }
   .validation-label.passed { color: var(--ok); background: rgba(126, 231, 135, 0.1); }
   .validation-label.limited { color: var(--warn); background: rgba(240, 163, 94, 0.12); }
-  .validation-label.rejected { color: var(--bad); background: rgba(244, 112, 103, 0.12); }
   .target-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
   .row.error .bubble {
     padding: 12px 16px; border-radius: 12px; font-size: 14px;
@@ -230,7 +219,7 @@
       </details>
       <div v-else-if="item.kind === 'steps' && !item.finished && !item.answering" class="thinking" role="status">생각 중…</div>
 
-      <div v-else-if="item.kind === 'agent'" class="row agent" :class="{ rejected: item.validationStatus === 'rejected' }">
+      <div v-else-if="item.kind === 'agent'" class="row agent">
         <div class="bubble"><div v-if="item.validationLabel" class="validation-label" :class="item.validationStatus" role="status">{{ item.validationLabel }}</div><div class="md" v-html="renderMarkdown(item.text)"></div>
           <div v-if="item.choices?.length" class="target-choices" aria-label="진단 대상 시스템 선택">
             <button v-for="target in item.choices" :key="target" type="button"
@@ -245,11 +234,6 @@
           <button type="button" :disabled="sending" @click="retry(item.retryText)">다시 시도</button>
         </div>
       </div>
-
-      <details v-else-if="item.kind === 'prompt'" class="prompt-box">
-        <summary>LLM에 전달된 최종 프롬프트 보기</summary>
-        <pre>{{ item.text }}</pre>
-      </details>
     </template>
   </div>
   <form @submit.prevent="onSubmit">
@@ -438,9 +422,12 @@ createApp({
         }
         if (e.type === 'AnswerToken' || e.type === 'FinalAnswer') stepsItem.answering = true;
         if (e.type === 'AnswerToken') {
-          if (!streamItem || streamAttempt !== e.attempt) {
+          if (!streamItem) {
             streamItem = reactive({ id: nextId++, kind: 'agent', text: '' });
             log.value.push(streamItem);
+          }
+          if (streamAttempt !== e.attempt) {   // 재작성 초안은 같은 말풍선을 처음부터 다시 채운다
+            streamItem.text = '';
             streamAttempt = e.attempt;
           }
           if (e.phase === 'draft') streamItem.validationLabel = '검증 전 초안 · 최종 답변을 기다려 주세요';
@@ -450,9 +437,14 @@ createApp({
         }
 
         if (e.type === 'Validation' && streamItem) {
-          streamItem.validationLabel = e.status === 'passed' ? '검증 완료'
-            : e.status === 'limited' ? '검증 미완료 · 제한된 답변으로 전환' : '검증 반려 · 이 초안은 사용하지 마세요';
-          streamItem.validationStatus = e.status === 'passed' || e.status === 'limited' ? e.status : 'rejected';
+          if (e.status === 'passed' || e.status === 'limited') {
+            streamItem.validationLabel = e.status === 'passed' ? '검증 완료' : '검증 미완료 · 제한된 답변으로 전환';
+            streamItem.validationStatus = e.status;
+          } else {
+            // 반려된 초안은 사용자가 따라 하지 않도록 즉시 지우고 재작성 토큰을 기다린다.
+            streamItem.text = '';
+            streamItem.validationLabel = '답변을 보완하는 중…';
+          }
         }
 
         if (e.type === 'FinalAnswer') {
@@ -465,7 +457,6 @@ createApp({
             : e.validation_status === 'passed' ? '검증 완료' : '';
           streamItem.validationStatus = e.validation_status;
           streamItem.choices = choices;
-          if (e.prompt) log.value.push({ id: nextId++, kind: 'prompt', text: e.prompt });
           streamItem = null;
           streamAttempt = null;
           scrollToBottom();
