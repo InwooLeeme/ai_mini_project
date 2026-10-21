@@ -11,6 +11,7 @@ incident: resolve_targets(불명확하면 확인 요청으로 종료)
 각 노드는 @traceable로 LangSmith에 계층 트리로 기록된다.
 """
 import asyncio
+import math
 from functools import partial
 from typing import Any, TypedDict
 
@@ -19,6 +20,7 @@ from langgraph.graph import END, StateGraph
 from langsmith import traceable
 
 from .deps import SupervisorDeps
+from .validation import AnswerValidator, issue_records, limited_answer
 from .evidence import ResearchTask
 from .analysis_policy import comparison_requested
 from .targets import (KNOWN_SYSTEMS, classify_followup, is_runbook_request,
@@ -49,6 +51,8 @@ class AgentState(TypedDict, total=False):
     resumed_target: bool
     pending_request_id: str
     runbook_only: bool
+    validation_status: str
+    validation_result: dict
 
 
 def _cost(state: AgentState, usage: dict) -> float:
@@ -345,17 +349,17 @@ async def write_node(state: AgentState, deps: SupervisorDeps) -> dict:
     writer = get_stream_writer()
     if "retrieval" in state and not state["retrieval"]["document_ids"]:
         # 미조회는 생성 모델이 빈 근거를 임의 조치로 채우지 못하도록 명시적으로 처리한다.
-        draft = ("1) 현재 질문과 관측에 맞는 런북 근거를 찾지 못했습니다. "
+        draft = ("1) " + ", ".join(state.get("resolved_targets", [])) + " 현재 질문과 관측에 맞는 런북 근거를 찾지 못했습니다. "
                  "2) 구체적인 증상·오류 메시지·발생 시점을 확인하고 해당 대응 문서를 확보해 주세요. "
                  "3) 근거 확인 전에는 특정 원인이나 조치를 확정할 수 없습니다.")
-        writer({"type": "AnswerToken", "attempt": attempt, "delta": draft})
+        writer({"type": "AnswerToken", "attempt": attempt, "phase": "draft", "delta": draft})
         return {"draft": draft, "last_prompt": None, "events": state["events"] + [
             {"type": "DraftWritten", "attempt": attempt, "length": len(draft)}]}
     draft, usage = await deps.quality_llm.write(
         state["query"], state.get("collected", []),
         attempt, state.get("validation_feedback"),
         on_token=lambda piece: writer(
-            {"type": "AnswerToken", "attempt": attempt, "delta": piece}))
+            {"type": "AnswerToken", "attempt": attempt, "phase": "draft", "delta": piece}))
     return {"draft": draft, "last_prompt": usage.get("prompt"),
             "cost_usd": _cost(state, usage),
             "events": state["events"] + [{"type": "DraftWritten", "attempt": attempt,
@@ -363,20 +367,31 @@ async def write_node(state: AgentState, deps: SupervisorDeps) -> dict:
 
 
 @traceable(name="validate_node")
-async def validate_node(state: AgentState, deps: SupervisorDeps) -> dict:
-    """Wave 8 — 코드 기준 검증: 30자 이상 + 절차 번호 포함이어야 합격."""
-    draft = state["draft"]
+async def validate_node(state: AgentState, deps: SupervisorDeps, *, validator=None) -> dict:
+    """규칙·의미 검토를 통과한 초안만 확정한다. 검증 불가는 제한된 답변으로 종료한다."""
+    validator = validator or AnswerValidator(deps.quality_llm)
     attempts = state.get("validation_attempts", 0) + 1
-    ok = len(draft) >= 30 and "1)" in draft
-    verdict = "합격" if ok else "불합격"
-    if not ok and attempts >= 3:   # 실모델 무한 재작성 방지 — 최대 3회 후 통과 처리
-        ok, verdict = True, "합격(최대 시도 도달 — 통과 처리)"
-    feedback = None if ok else (
-        f"응답이 너무 짧습니다({len(draft)}자, 최소 30자). 절차를 1) 2) 3) 번호로 "
-        f"구체적으로 설명하세요.")
-    event = {"type": "Validation", "attempt": attempts, "verdict": verdict}
-    return {"validation_attempts": attempts, "validation_feedback": feedback,
-            "events": state["events"] + [event]}
+    result = await validator.validate(state["query"], state["draft"],
+                                      state.get("collected", []), state.get("resolved_targets", []))
+    passed = result.status == "passed"
+    limited = not passed and (attempts >= 3 or result.status == "unavailable")
+    status = "limited" if limited else result.status
+    detail = {"status": status, "review_status": result.status,
+              "issues": issue_records(result), "checks": list(result.checks),
+              "review_called": result.review_called, "usage": result.usage,
+              "elapsed_ms": result.elapsed_ms}
+    verdict = "합격" if passed else "제한된 답변" if limited else "불합격"
+    event = {"type": "Validation", "attempt": attempts, "verdict": verdict, **detail}
+    update = {"validation_attempts": attempts, "validation_status": status,
+              "validation_result": detail,
+              "validation_feedback": None if passed or limited else result.feedback(),
+              "events": state["events"] + [event]}
+    usd = result.usage.get("usd")
+    if isinstance(usd, (int, float)) and not isinstance(usd, bool) and math.isfinite(usd) and usd >= 0:
+        update["cost_usd"] = _cost(state, {"usd": usd})
+    if limited:
+        update["draft"] = limited_answer(state.get("collected", []), state.get("resolved_targets", []))
+    return update
 
 
 @traceable(name="finalize_node")
@@ -417,7 +432,8 @@ def build_graph(deps: SupervisorDeps):
     g.add_node("replan_check", node(prepare_evidence_node))
     g.add_node("analysis", node(analysis_node))
     g.add_node("write", node(write_node))
-    g.add_node("validate", node(validate_node))
+    g.add_node("validate", partial(validate_node, deps=deps,
+                                   validator=getattr(deps, "answer_validator", None) or AnswerValidator(deps.quality_llm)))
     g.add_node("finalize", node(finalize_node))
 
     g.set_entry_point("prepare_request")

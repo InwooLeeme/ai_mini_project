@@ -127,7 +127,8 @@ def test_incident_stream_preserves_events_final_answer_and_history():
             "AnswerToken", "DraftWritten", "Validation", "Finalize", "FinalAnswer",
         ]
         final = events[-1]
-        assert set(final) == {"type", "reply", "prompt"}
+        assert set(final) == {"type", "reply", "prompt", "validation_status"}
+        assert final["validation_status"] == "passed"
         assert "web-01 상태=healthy" in final["reply"]
         assert "대응 절차" in final["reply"]
         assert [e["attempt"] for e in events if e["type"] == "AnswerToken"] == [1, 2]

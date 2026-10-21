@@ -21,6 +21,16 @@ class FakeLLM:
         return {"model": self.name, "tokens": tokens,
                 "usd": round(tokens / 1000 * self.usd_per_1k, 6)}
 
+    async def review(self, query, draft, collected, targets):
+        """오프라인 데모용 응답. 실제 의미 판단 능력이나 품질 평가 결과가 아니다."""
+        import json
+        from .validation import CRITERIA
+        return json.dumps({"checks": [
+            {"criterion": c, "status": "pass", "quote": "", "evidence_ids": [],
+             "reason": "fake 백엔드: 의미 검토 생략, 규칙 검사만 수행", "correction": ""}
+            for c in CRITERIA]}, ensure_ascii=False), {"model": self.name, "usd": 0, "simulated": True}
+
+
 
 class FastLLM(FakeLLM):
     """분류·계획 등 짧고 정형적인 단계 전담 (저비용)."""
@@ -114,6 +124,8 @@ class QualityLLM(FakeLLM):
             lines.append(f"2) 표준 절차: '{title}'에 따라 {advice}")
             if evidence.get("uri"):
                 lines.append(f"[출처: {evidence['uri']}]")
+        if feedback and "[discrepancy]" in feedback:
+            lines.append("사용자 제보와 현재 관측이 다릅니다. 발생 시각과 해당 구간 지표를 확인해 주세요.")
         lines.append("3) 정상화 확인 후 원인 분석과 재발 방지 대책을 문서화하세요.")
         draft = " ".join(lines)
         if on_token is not None:

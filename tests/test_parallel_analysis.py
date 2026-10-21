@@ -76,7 +76,9 @@ def test_analysis_requires_two_distinct_observed_systems(names):
 
 
 def make_deps(analyze, retrieve, written):
-    class Fast:
+    from agent.fake_llm import FastLLM
+
+    class Fast(FastLLM):
         def route(self, query):
             return {"route": "incident", "needs_analysis": True}, {"usd": 0.1}
 
@@ -89,7 +91,7 @@ def make_deps(analyze, retrieve, written):
                 {"id": "analysis", "agent": "analysis", "status": "pending"},
             ]}, {"usd": 0.2}
 
-    fast = Fast()
+    fast = Fast("test", 0)
     fast.analyze = analyze
 
     class Collector:
@@ -97,14 +99,15 @@ def make_deps(analyze, retrieve, written):
             return CollectionResult([
                 Evidence(t.index, "monitoring", {
                     "system_name": t.target, "status": "degraded",
-                    "cpu_percent": 90, "alerts": ["latency"],
+                    "cpu_percent": 90, "memory_percent": 45, "last_checked": "2026-10-21T09:00:00", "alerts": ["latency"],
                 }, 0) for t in tasks
             ], 0.01)
 
     class Writer:
         async def write(self, query, collected, attempt, feedback, on_token=None):
             written.append(copy.deepcopy(collected))
-            return "1) 모니터링과 런북을 확인했습니다. 2) 공통 원인은 가설입니다. 3) 추가 근거를 확인하세요.", {"usd": 0.8}
+            names = ", ".join(c["data"]["system_name"] for c in collected if c["source"] == "monitoring")
+            return f"1) {names}의 모니터링과 런북을 확인했습니다. 2) 공통 원인은 가설입니다. 3) 추가 근거를 확인하세요.", {"usd": 0.8}
 
     async def find_prompt(name):
         return "ops"
@@ -112,7 +115,9 @@ def make_deps(analyze, retrieve, written):
     async def get_prompt(*args, **kwargs):
         return "관측을 확인하세요"
 
+    from agent.validation import AnswerValidator
     return SimpleNamespace(
+        answer_validator=AnswerValidator(fast),
         fast_llm=fast, quality_llm=Writer(), evidence_collector=Collector(),
         mcp=SimpleNamespace(find_prompt=find_prompt, get_prompt=get_prompt),
         runbook_retriever=SimpleNamespace(search=retrieve),

@@ -9,6 +9,7 @@ from typing import Any
 
 from .evidence import EvidenceCollector
 from .rag import RunbookRetriever
+from .validation import AnswerValidator
 
 
 @dataclass
@@ -20,3 +21,4 @@ class SupervisorDeps:
     version: str         # Wave 14 — SUPERVISOR_VERSION (v1/v2)
     evidence_collector: EvidenceCollector  # 조사 자료 수집 구현을 외부에서 주입
     runbook_retriever: RunbookRetriever | None = None  # None은 기존 검색 비교용
+    answer_validator: AnswerValidator | None = None  # 그래프 조립 시 기본 검증기 생성

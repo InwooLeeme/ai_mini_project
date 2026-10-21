@@ -76,7 +76,6 @@ def _record_openai_usage(response: dict, requested_model: str) -> None:
         metadata["usage_metadata"] = usage
     run.add_metadata(metadata)
 
-
 class OpenAILLM:
     def __init__(self, model: str, usd_per_1k_tokens: float):
         self.name = f"openai:{model}"
@@ -122,12 +121,18 @@ class OpenAILLM:
         payload, headers = self._request(system, user, json_mode)
         return self._response(httpx.post(OPENAI_URL, json=payload, headers=headers, timeout=120.0))
 
-    async def _achat(self, system: str, user: str) -> tuple[str, dict]:
+    async def _achat(self, system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
         """분석 요청을 비차단 HTTP로 실행하고 취소 시 연결을 정리한다."""
-        payload, headers = self._request(system, user)
+        payload, headers = self._request(system, user, json_mode)
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(OPENAI_URL, json=payload, headers=headers)
             return self._response(response)
+
+    @traceable(run_type="llm", name="openai.review")
+    async def review(self, query, draft, collected, targets):
+        from .validation import REVIEW_INSTRUCTIONS, review_input
+        return await self._achat(REVIEW_INSTRUCTIONS,
+                                 review_input(query, draft, collected, targets), json_mode=True)
 
 
 class OpenAIFastLLM(OpenAILLM):
@@ -200,7 +205,6 @@ class OpenAIFastLLM(OpenAILLM):
             on_token(content)
         return content, usage
 
-
 class OpenAIQualityLLM(OpenAILLM):
     """최종 답변 작성 전담 (고품질 모델, 기본 gpt-4o)."""
 
@@ -219,12 +223,17 @@ class OpenAIQualityLLM(OpenAILLM):
                 d = c["data"]
                 facts.append(f"- 모니터링 {d['system_name']}: 상태={d['status']}, "
                              f"CPU {d['cpu_percent']}%, 메모리 {d['memory_percent']}%, "
-                             f"알림 {len(d['alerts'])}건 {d['alerts']}")
+                             f"조회 시각={d.get('last_checked', '미확인')}, 알림 {len(d['alerts'])}건 {d['alerts']}")
             elif c["source"] == "runbook":
                 facts.append(f"- runbook 출처: {c.get('uri', '(기존 문서)')}\n{c['data'].strip()}")
             elif c["source"] == "analysis":
                 facts.append(f"- 패턴 분석: {c['data'].strip()}")
         system += (" 런북을 사용한 조치에는 제공된 출처 URI를 표시하라. "
+                   "조치 실행 도구가 없으므로 재시작·증설·설정 변경을 실행했다고 쓰지 마라. "
+                   "알림 임계값과 런북 조치 임계값은 다른 기준이므로 구분하라. "
+                   "현재 관측·알림·가설·미확인을 구분하고, 단일 수치로 지속을 단정하지 마라. "
+                   "지속 조건이 있는 조치에는 현재 지속 여부의 확인/미확인을 먼저 명시하라. "
+                   "제보와 현재 관측이 다르면 발생 시각과 해당 구간 확인을 안내하라. "
                    "각 문서의 조건과 임계값을 보존하고, 여러 문서의 서로 다른 절차를 임의로 섞지 마라.")
         user = f"## 사용자 요청\n{query}\n\n## 수집된 사실\n" + "\n".join(facts)
         if feedback:
