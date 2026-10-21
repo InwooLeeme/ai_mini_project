@@ -9,9 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, patch
 
-os.environ["LANGCHAIN_TRACING_V2"] = "false"
-os.environ["LANGSMITH_TRACING"] = "false"
-
 from agent.mcp_client import MCPClient
 from agent.retry import with_retry
 

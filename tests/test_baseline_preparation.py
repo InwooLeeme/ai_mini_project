@@ -1,12 +1,8 @@
 """Baseline 준비 범위만 검증한다. 실모델·외부 추적 전송은 사용하지 않는다."""
 import asyncio
-import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-
-os.environ["LANGCHAIN_TRACING_V2"] = "false"
-os.environ["LANGSMITH_TRACING"] = "false"
 
 from agent.deps import SupervisorDeps
 from agent.evidence import MCPEvidenceCollector
