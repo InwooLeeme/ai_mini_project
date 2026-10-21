@@ -150,7 +150,7 @@ def observations(collected):
 
 # 이 규칙은 명시적인 한국어/영어 수치 표기만 검사한다. 나머지는 의미 검토가 담당한다.
 METRIC = re.compile(r'(CPU|메모리|memory)(?:\s*(?:사용률|사용량))?[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*%', re.I)
-THRESHOLD = re.compile(r'\s*(?:\*\*)?\s*(?:를\s*)?(?:이상|초과|넘|미만|이하|보다)')
+THRESHOLD = re.compile(r'\s*(?:\*\*)?\s*(?:를\s*)?(?:이상|초과|넘|미만|이하|보다|(?:의\s*)?임계(?:값|치))')
 CONDITIONAL = re.compile(r'이면|라면|다면|경우|때에는|미확인|확인.{0,12}필요|확인되지|단정.{0,8}(?:없|않)|아닙|아니|not\b|\bif\b', re.I)
 
 
@@ -268,16 +268,29 @@ class AnswerValidator:
         status = 'rejected' if issues else 'passed'
         if not issues:
             called = True
+            stage = 'review'
             try:
                 async with asyncio.timeout(self.timeout_seconds):
                     content, usage = await self.model.review(query, draft, collected, targets)
+                stage = 'parse_review'
                 checks, issues = parse_review(content, draft, collected)
                 status = ('unavailable' if any(c['status'] == 'unknown' for c in checks)
                           else 'rejected' if issues else 'passed')
             except Exception as exc:
-                # 응답 원문이나 인증·전송 오류 메시지를 사용자 피드백에 노출하지 않는다.
+                # 기존 이벤트에 단계와 알려진 파싱 사유만 남긴다. 원문·전송 오류 메시지는 제외한다.
+                reason = ''
+                if stage == 'parse_review':
+                    if isinstance(exc, json.JSONDecodeError):
+                        reason = ': invalid JSON'
+                    elif type(exc) is ValueError and str(exc) in (
+                        'invalid review object', 'invalid check fields', 'missing or duplicate criterion',
+                        'invalid status', 'invalid explanation', 'invented quote',
+                        'invalid evidence reference', 'missing correction', 'incomplete review',
+                    ):
+                        reason = f': {exc}'
+                diagnostic = f'{type(exc).__name__} ({stage}{reason})'
                 status = 'unavailable'
-                issues = [Issue('review_unavailable', '', type(exc).__name__,
+                issues = [Issue('review_unavailable', '', diagnostic,
                                 '내용 검증을 완료하지 못했습니다. 확인된 관측과 추가 확인 사항만 안내하세요.')]
         # 공급자가 usage를 주지 않은 경우를 0토큰 사용으로 만들지 않는다.
         if not isinstance(usage, dict):
@@ -294,6 +307,10 @@ def limited_answer(collected, targets):
         if d:
             lines.append(f"- {target}: 상태={d['status']}, CPU {d['cpu_percent']}%, "
                          f"메모리 {d['memory_percent']}%, 조회 시각={d.get('last_checked', '미확인')}")
+            alerts = d.get('alerts', [])
+            if alerts:
+                lines.append('  모니터링 알림 원문(시계열 검증·원인 판단은 추가 확인 필요):')
+                lines.extend(f'  - {alert}' for alert in alerts)
         else:
             lines.append(f'- {target}: 관측 근거 없음')
     lines.extend(['2) 발생 시각·지속 시간과 해당 구간의 로그·지표를 확인해 주세요.',

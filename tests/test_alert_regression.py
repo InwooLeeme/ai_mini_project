@@ -134,3 +134,95 @@ def test_evaluation_does_not_pass_exhausted_or_unavailable_rewrites(status, expe
     assert len(records) == 8
     assert len(rewrites) == 2
     assert all(r['writes'] == expected_writes and not r['passed'] for r in rewrites)
+
+
+@pytest.mark.parametrize('transport', ['http', 'sse'])
+@pytest.mark.parametrize('failure,attempts', [('invalid_review', 1), ('exhausted', 3)])
+def test_limited_final_response_and_history_preserve_original_alerts(transport, failure, attempts):
+    """외부 수집·모델 응답만 고정하고 실제 그래프와 응답·저장 경로를 실행한다."""
+    from fastapi.testclient import TestClient
+    from test_app_runtime import make_test_app, decode_sse
+    from agent.evidence import CollectionResult, Evidence
+    from agent.graph import build_graph
+    from agent.validation import AnswerValidator
+    from evaluation.alert_regression import load_fixture
+
+    fixture = load_fixture()
+    original = copy.deepcopy(fixture)
+    monitoring = {c['data']['system_name']: c['data'] for c in fixture['collected']
+                  if c['source'] == 'monitoring'}
+    runbooks = {c['document_id']: c['data'] for c in fixture['collected'] if c['source'] == 'runbook'}
+
+    class Collector:
+        async def collect(self, tasks):
+            return CollectionResult([
+                Evidence(task.index, task.kind,
+                         copy.deepcopy(monitoring[task.target]) if task.kind == 'monitoring'
+                         else runbooks[task.target], 0)
+                for task in tasks
+            ], elapsed=0)
+
+    async def write(*args, **kwargs):
+        draft = (fixture['draft'] if failure == 'invalid_review' else
+                 '1) payments-service CPU 99%입니다. cache-service 메모리 89%입니다. '
+                 '2) 원인을 확정했으므로 즉시 프로세스를 재시작하세요.')
+        return draft, {'usd': 0}
+
+    async def review(*args):
+        return '{', {'usd': 0}
+
+    app, store, _ = make_test_app()
+    with TestClient(app) as client:
+        deps = app.state.deps
+        # 원본 질문의 실모델 라우팅 결과를 고정한다(fake 라우터의 키워드 평가는 범위 밖).
+        deps.fast_llm.route = lambda query: ({'route': 'incident', 'needs_analysis': True}, {'usd': 0})
+        deps.evidence_collector = Collector()
+        deps.quality_llm.write = write
+        deps.quality_llm.review = review
+        deps.answer_validator = AnswerValidator(deps.quality_llm)
+        app.state.graph = build_graph(deps)
+        request = {'message': fixture['query'], 'thread_id': 'limited-alerts'}
+        if transport == 'sse':
+            events = decode_sse(client.get('/chat/stream', params=request))
+            final = events[-1]['reply']
+            assert events[-1]['validation_status'] == 'limited'
+        else:
+            response = client.post('/chat', json=request)
+            assert response.status_code == 200
+            data = response.json()
+            events, final = data['events'], data['reply']
+        checks = [e for e in events if e['type'] == 'Validation']
+        assert len(checks) == attempts
+        assert checks[-1]['status'] == 'limited'
+        assert checks[-1]['review_status'] == ('unavailable' if failure == 'invalid_review' else 'rejected')
+        assert store.load('limited-alerts')[-1]['content'] == final
+
+    payments, cache = final.split('- cache-service:', 1)
+    assert 'CPU 91.0%' in payments and '메모리 89.0%' in cache
+    for alert in monitoring['payments-service']['alerts']:
+        assert alert in payments and alert not in cache
+    for alert in monitoring['cache-service']['alerts']:
+        assert alert in cache and alert not in payments
+    assert '모니터링 알림' in payments and '모니터링 알림' in cache
+    assert '원인과 조치를 확정하지 않습니다' in final
+    assert '시계열' in final and '추가 확인' in final
+    assert '즉시 프로세스를 재시작' not in final
+    assert fixture == original
+
+
+@pytest.mark.parametrize('alerts', [[], None])
+def test_limited_answer_without_alerts_does_not_invent_or_leak_other_targets(alerts):
+    from agent.validation import limited_answer
+    from evaluation.alert_regression import load_fixture
+    fixture = load_fixture()
+    cache = fixture['collected'][1]['data']
+    if alerts is None:
+        cache.pop('alerts')
+    else:
+        cache['alerts'] = alerts
+    final = limited_answer(fixture['collected'], ['cache-service', 'unknown-service'])
+    assert '메모리 89.0%' in final
+    assert 'unknown-service: 관측 근거 없음' in final
+    assert 'payments-service' not in final
+    assert 'heap near limit' not in final
+    assert '모니터링 알림' not in final

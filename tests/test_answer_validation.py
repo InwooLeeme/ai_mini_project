@@ -79,6 +79,24 @@ def test_numeric_rule_does_not_accept_other_system_value():
     assert len([i for i in result['validation_result']['issues'] if i['code'] == 'numeric']) == 2
 
 
+@pytest.mark.parametrize('threshold', ['80% 임계값', '80%의 임계치', '80%임계값'])
+def test_explicit_threshold_label_is_not_compared_to_current_cpu(threshold):
+    from agent.validation import rule_issues
+    draft = (f'1) payments-service의 CPU 사용률이 {threshold}을 초과했습니다. '
+             '2) 현재 CPU 사용률은 91%이며 지속 여부는 추가 확인이 필요합니다.')
+    issues = rule_issues(draft, evidence(alerts=['CPU 91% (threshold 80%)']), ['payments-service'])
+    assert not any(i.code == 'numeric' for i in issues)
+
+
+@pytest.mark.parametrize('claim', ['현재 CPU 사용률은 80%입니다.',
+                                   '현재 CPU 사용률은 80%이며 알림 임계값은 80%입니다.'])
+def test_threshold_word_elsewhere_does_not_hide_wrong_observation(claim):
+    from agent.validation import rule_issues
+    draft = f'1) payments-service {claim} 2) 발생 시각과 로그를 확인하세요.'
+    issues = rule_issues(draft, evidence(), ['payments-service'])
+    assert any(i.code == 'numeric' and '80%' in i.quote for i in issues)
+
+
 def review_reply(status='pass', criterion='grounding'):
     import json
     names = ('numeric', 'conditions', 'temporal', 'grounding', 'coverage', 'discrepancy')
@@ -132,6 +150,48 @@ def test_invented_quote_or_evidence_rejected():
     assert run_review(ReviewStub(json.dumps(data))).status == 'unavailable'
 
 
+@pytest.mark.parametrize('failure,reason', [
+    ('json', 'invalid JSON'),
+    ('quote', 'invented quote'),
+    ('evidence', 'invalid evidence reference'),
+    ('fields', 'invalid check fields'),
+])
+def test_review_parse_failure_records_safe_reason_without_raw_response(failure, reason):
+    import json
+    data = json.loads(review_reply())
+    data['checks'][0]['reason'] = 'private-response-marker'
+    if failure == 'quote':
+        data['checks'][0]['quote'] = 'private-response-marker'
+    elif failure == 'evidence':
+        data['checks'][0]['evidence_ids'] = [999]
+    elif failure == 'fields':
+        del data['checks'][0]['status']
+    content = '{private-response-marker' if failure == 'json' else json.dumps(data)
+    result = run_review(ReviewStub(content))
+    assert result.status == 'unavailable'
+    assert f'parse_review: {reason}' in result.issues[0].evidence
+    assert 'private-response-marker' not in result.feedback()
+    assert result.usage['tokens'] == 200
+
+
+def test_provider_error_is_not_misreported_as_parser_failure():
+    result = run_review(ReviewStub(error=ValueError('secret: invented quote')))
+    assert result.status == 'unavailable'
+    assert result.issues[0].evidence == 'ValueError (review)'
+    assert 'secret' not in result.feedback() and 'invented quote' not in result.feedback()
+
+
+def test_labeled_threshold_still_receives_semantic_review():
+    from agent.validation import AnswerValidator
+    draft = ('1) payments-service의 CPU 사용률이 70% 임계값을 초과했습니다. '
+             '2) 현재 CPU는 91%이며 지속 여부는 확인이 필요합니다.')
+    result = asyncio.run(AnswerValidator(ReviewStub(review_reply('fail', 'numeric'))).validate(
+        '진단', draft, evidence(alerts=['CPU 91% (threshold 80%)']), ['payments-service']))
+    assert result.review_called
+    assert result.status == 'rejected'
+    assert result.issues[0].code == 'numeric'
+
+
 @pytest.mark.parametrize('model', [ReviewStub(error=RuntimeError('secret')), ReviewStub(delay=1)])
 def test_review_error_or_timeout_is_not_success(model):
     result = run_review(model, timeout=0.01)
@@ -167,6 +227,7 @@ def test_semantic_error_finishes_with_limited_observations_and_real_cost():
     assert '로그를 확인해 원인을 확정' not in result['draft']
     assert '91' in result['draft'] and '89' in result['draft']
     assert result['cost_usd'] == 0.011
+    assert 'parse_review: invalid JSON' in result['events'][-1]['issues'][0]['evidence']
 
 
 def test_stream_labels_draft_and_limited_result():
