@@ -37,6 +37,29 @@ async def rendezvous(group: str, expected: int) -> dict:
         return {"started": started, "ended": time.perf_counter(), "concurrent": concurrent}
     finally:
         active -= 1
+waiting = None
+pairs = 0
+@mcp.tool()
+async def pair_up() -> dict:
+    # 도착 순서대로 먼저 온 두 요청끼리 짝을 지어, 슬롯 진입 순서와 무관하게 만난다.
+    global active, waiting, pairs
+    active += 1
+    started = time.perf_counter()
+    concurrent = active
+    if waiting is None:
+        pairs += 1
+        waiting = (pairs, asyncio.Event())
+        pair, partner = waiting
+    else:
+        (pair, partner), waiting = waiting, None
+        partner.set()
+    try:
+        await asyncio.wait_for(partner.wait(), 2)
+        await asyncio.sleep(0.02)
+        return {"pair": pair, "started": started, "ended": time.perf_counter(),
+                "concurrent": concurrent}
+    finally:
+        active -= 1
 @mcp.tool()
 async def wait_started() -> dict:
     await started_event.wait()
@@ -97,13 +120,17 @@ class StdioConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             client = MCPClient(server_scripts={"ops": script}, max_concurrency=2)
             await client.start()
             try:
-                results = await asyncio.gather(*(
-                    client.call_tool("rendezvous", {"group": f"pair-{i // 2}", "expected": 2})
-                    for i in range(6)))
+                # 클라이언트는 호출 순서대로 슬롯을 주지 않으므로 짝은 서버 도착 순서로 정한다.
+                results = await asyncio.gather(*(client.call_tool("pair_up", {})
+                                                 for _ in range(6)))
                 self.assertEqual(max(r["concurrent"] for r in results), 2)
-                for i in (0, 2, 4):
-                    self.assertLess(max(r["started"] for r in results[i:i+2]),
-                                    min(r["ended"] for r in results[i:i+2]))
+                pairs = {}
+                for r in results:
+                    pairs.setdefault(r["pair"], []).append(r)
+                self.assertEqual(sorted(len(p) for p in pairs.values()), [2, 2, 2])
+                for pair in pairs.values():
+                    self.assertLess(max(r["started"] for r in pair),
+                                    min(r["ended"] for r in pair))
             finally:
                 await client.stop()
 
@@ -171,9 +198,11 @@ class RequestLifetimeTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(client.call_tool("tool", {}))
         await entered.wait()
         queued = asyncio.create_task(client.call_tool("tool", {}))
-        await asyncio.sleep(0)
         try:
             async with asyncio.timeout(1):
+                # 등록까지 걸리는 루프 횟수는 traceable 래퍼와 실행 환경에 따라 달라진다.
+                while queued not in client._active_requests:
+                    await asyncio.sleep(0)
                 await client.stop()
             self.assertTrue(task.cancelled())
             self.assertTrue(queued.cancelled())
