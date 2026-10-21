@@ -19,10 +19,18 @@
     display: flex; flex-direction: column;
   }
   header {
+    display: flex; align-items: center; gap: 12px;
     padding: 14px 20px; background: #262638; border-bottom: 1px solid #3a3a52;
     font-weight: 600; font-size: 15px;
   }
-  header span { color: #8b8bd8; font-weight: 400; font-size: 13px; margin-left: 8px; }
+  .backend-status {
+    margin-left: auto; padding: 3px 10px; border-radius: 999px;
+    font-weight: 500; font-size: 12px; color: #9a9ac0; background: #2e2e42;
+  }
+  .backend-status::before { content: "● "; }
+  .backend-status.real { color: #7ee787; background: rgba(126, 231, 135, 0.12); }
+  .backend-status.test { color: #f0a35e; background: rgba(240, 163, 94, 0.14); }
+  .backend-status.offline { color: #f47067; background: rgba(244, 112, 103, 0.14); }
   #log {
     flex: 1; min-height: 0;   /* flex 자식 기본 최소높이(콘텐츠 크기)를 풀어줘야
                                  내용이 길어져도 바디가 안 늘어나고 여기서만 스크롤됨 */
@@ -111,7 +119,9 @@
 </head>
 <body>
 <div id="app">
-  <header>운영 인시던트 대응 에이전트 <span>{{ backendLabel }}</span></header>
+  <header>운영 인시던트 대응 에이전트
+    <span class="backend-status" :class="backend.state" role="status">{{ backend.text }}</span>
+  </header>
   <div id="log" ref="logEl">
     <template v-for="item in log" :key="item.id">
       <div v-if="item.kind === 'user'" class="row user">
@@ -174,6 +184,8 @@ function renderMarkdown(text) {
   return DOMPurify.sanitize(marked.parse(text || ''));
 }
 
+const BACKEND_NAMES = { openai: 'OpenAI', ollama: 'Ollama(로컬)' };
+
 const STEP_LABELS = {
   TargetConfirmationRequired: () => '대상 시스템 확인 필요 · 선택 후 원래 질문으로 진단을 이어갑니다',
   TargetConfirmationCancelled: () => '대상 시스템 확인 취소',
@@ -193,7 +205,7 @@ const STEP_LABELS = {
 
 createApp({
   setup() {
-    const backendLabel = ref('all_total_vue');
+    const backend = ref({ state: '', text: '서버 확인 중' });
     const log = ref([]);
     const input = ref('');
     const sending = ref(false);
@@ -201,9 +213,14 @@ createApp({
     const thread = 't-web-' + Math.random().toString(36).slice(2, 8);
     let nextId = 0;
 
+    // fake 백엔드의 답도 겉보기엔 정상 답변이라, 실제 모델인지 테스트 모드인지 헤더에서 구분해 준다.
     fetch('/health').then(r => r.json()).then(h => {
-      backendLabel.value = `${h.llm_backend} 실모델(${h.fast_llm}/${h.quality_llm}) · all_total_vue`;
-    }).catch(() => {});
+      backend.value = h.llm_backend === 'fake'
+        ? { state: 'test', text: '테스트 모드 · 가짜 응답' }
+        : { state: 'real', text: `${BACKEND_NAMES[h.llm_backend] ?? h.llm_backend} · ${h.fast_llm} / ${h.quality_llm}` };
+    }).catch(() => {
+      backend.value = { state: 'offline', text: '서버 연결 안 됨' };
+    });
 
     async function scrollToBottom() {
       await nextTick();
@@ -299,7 +316,7 @@ createApp({
       onSubmit();
     }
 
-    return { backendLabel, log, input, sending, logEl, onSubmit, chooseTarget, retry, renderMarkdown };
+    return { backend, log, input, sending, logEl, onSubmit, chooseTarget, retry, renderMarkdown };
   },
 }).mount('#app');
 </script>
