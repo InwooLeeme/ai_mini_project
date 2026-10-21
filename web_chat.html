@@ -10,6 +10,7 @@
     --bg: #212121;
     --surface: #2f2f2f;         /* 사용자 말풍선, 입력창 */
     --surface-hover: #3a3a3a;
+    --agent-bubble: #282828;    /* 에이전트 답변 말풍선 */
     --border: #3d3d3d;
     --text: #ececec;
     --muted: #9b9b9b;
@@ -98,33 +99,57 @@
   .examples { display: flex; flex-direction: column; align-items: center; gap: 8px; }
   .examples button { padding: 10px 16px; font-size: 14px; }
   .row { display: flex; }
-  .row.user { justify-content: flex-end; }
+  .row.user { flex-direction: column; align-items: flex-end; gap: 6px; }
   .bubble { line-height: 1.7; font-size: 15px; white-space: pre-wrap; }
   .row.user .bubble {
     max-width: 70%; padding: 10px 16px; border-radius: 20px;
     background: var(--surface); line-height: 1.5;
   }
-  /* 에이전트 답변도 요청과 같은 배경의 말풍선으로 보여준다. 표·코드가 들어가므로 폭은 더 넓게 둔다. */
+  /* 에이전트 답변은 배경을 한 단계 어둡게 하고 테두리를 둘러 요청 말풍선과 구분한다.
+     표·코드가 들어가므로 폭은 더 넓게 둔다. */
   .row.agent .bubble {
-    max-width: 85%; min-width: 0; padding: 12px 16px; border-radius: 20px; background: var(--surface);
+    max-width: 85%; min-width: 0; padding: 12px 16px; border-radius: 20px;
+    background: var(--agent-bubble); border: 1px solid var(--border);
   }
   .row.agent .md code { background: var(--surface-hover); }   /* 말풍선 배경과 구분되게 한 단계 밝게 */
   .row.agent .md pre code { background: none; }
   .md { white-space: normal; }   /* 줄바꿈은 marked(breaks)가 <br>로 바꿔주므로 pre-wrap을 끈다 */
+  /* 반려된 초안을 지운 뒤 재작성 토큰이 오기 전까지 답변 자리가 한 줄로 쪼그라들지 않게 한다. */
+  .md:empty { min-height: 3.4em; }
+  .md.streaming > :last-child::after {
+    content: "▍"; margin-left: 2px; color: var(--muted); animation: pulse 1s steps(2) infinite;
+  }
   .md > :first-child { margin-top: 0; }
   .md > :last-child { margin-bottom: 0; }
   .md p, .md ul, .md ol, .md pre { margin: 0 0 12px; }
   .md ul, .md ol { padding-left: 22px; }
   .md li + li { margin-top: 4px; }
-  .md h1, .md h2, .md h3, .md h4 { margin: 20px 0 8px; font-size: 16px; }
+  .md h1, .md h2, .md h3, .md h4 { margin: 20px 0 8px; font-size: 15px; }
+  /* 긴 진단 답변을 섹션 단위로 훑어볼 수 있게 큰 제목 아래에 구분선을 둔다. */
+  .md h1, .md h2, .md h3 { margin-top: 24px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .md h1 { font-size: 20px; }
+  .md h2 { font-size: 18px; }
+  .md h3 { font-size: 16px; }
+  .md strong { color: #ffffff; font-weight: 600; }
+  .md blockquote {
+    margin: 0 0 12px; padding: 2px 0 2px 12px; border-left: 3px solid var(--border); color: var(--muted);
+  }
+  .md hr { margin: 16px 0; border: none; border-top: 1px solid var(--border); }
   .md code {
     font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
     background: var(--surface); padding: 2px 6px; border-radius: 6px;
   }
   .md pre { background: var(--code-bg); padding: 12px 14px; border-radius: 12px; overflow-x: auto; }
   .md pre code { background: none; padding: 0; }
-  .md table { border-collapse: collapse; margin: 0 0 12px; }
+  /* 복사 버튼을 <pre> 밖에 두어, 긴 명령을 가로로 스크롤해도 버튼은 제자리에 있게 한다. */
+  .code-block { position: relative; }
+  .code-block .code-copy { position: absolute; top: 6px; right: 6px; background: var(--code-bg); }
+  /* 열이 많은 지표 표는 화면을 넘기지 않고 표 안에서 가로로 스크롤한다. */
+  .md table {
+    display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 12px; font-size: 13px;
+  }
   .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .md th { background: var(--surface-hover); font-weight: 600; }
   .md a { color: var(--link); }
   .steps {
     flex-shrink: 0;   /* #log가 스크롤 영역이 되면서(min-height:0) <details>가 flex
@@ -147,7 +172,9 @@
   /* 첫 진행 단계나 답변 토큰이 오기 전까지 요청이 처리 중임을 보여준다. */
   .thinking { flex-shrink: 0; font-size: 13px; color: var(--muted); animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.4; } }
-  @media (prefers-reduced-motion: reduce) { .thinking { animation: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .thinking, .validation-label.revising, .md.streaming > :last-child::after { animation: none; }
+  }
   form { padding: 0 var(--gutter) 12px; }
   .composer {
     display: flex; align-items: flex-end; gap: 8px;
@@ -168,6 +195,19 @@
   .send:disabled { background: var(--surface-hover); color: var(--muted); }
   .hint { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--muted); }
   .validation-label { font-size: 12px; color: var(--draft); margin-bottom: 8px; }
+  .validation-label.revising { color: var(--muted); animation: pulse 1.4s ease-in-out infinite; }
+  /* 최종 검증 결과와 복사 버튼은 본문을 읽은 뒤 보이도록 답변 아래에 모은다. */
+  .answer-meta {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);
+  }
+  .answer-meta .validation-label { margin: 0; }
+  .answer-meta .copy { margin-left: auto; }
+  .copy {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 8px; font-size: 12px; color: var(--muted); border-color: transparent;
+  }
+  .copy:hover:not(:disabled) { color: var(--text); }
   .validation-label.passed, .validation-label.limited {
     display: inline-block; padding: 2px 8px; border-radius: 6px; font-weight: 600;
   }
@@ -207,7 +247,14 @@
     </div>
     <template v-for="item in log" :key="item.id">
       <div v-if="item.kind === 'user'" class="row user">
-        <div class="bubble"><div v-if="item.validationLabel" class="validation-label" role="status">{{ item.validationLabel }}</div>{{ item.text }}</div>
+        <div class="bubble">{{ item.text }}</div>
+        <button type="button" class="copy" aria-label="질문 복사" title="복사" @click="copyText(item)">
+          <span v-if="item.copied" role="status">{{ item.copied }}</span>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" />
+          </svg>
+        </button>
       </div>
 
       <details v-else-if="item.kind === 'steps' && item.steps.length" class="steps" :open="!item.finished">
@@ -220,11 +267,21 @@
       <div v-else-if="item.kind === 'steps' && !item.finished && !item.answering" class="thinking" role="status">생각 중…</div>
 
       <div v-else-if="item.kind === 'agent'" class="row agent">
-        <div class="bubble"><div v-if="item.validationLabel" class="validation-label" :class="item.validationStatus" role="status">{{ item.validationLabel }}</div><div class="md" v-html="renderMarkdown(item.text)"></div>
+        <div class="bubble"><div v-if="item.streaming && item.validationLabel" class="validation-label" :class="item.validationStatus" role="status">{{ item.validationLabel }}</div><div class="md" :class="{ streaming: item.streaming }" v-html="renderMarkdown(item.text)" @click="copyCodeBlock"></div>
           <div v-if="item.choices?.length" class="target-choices" aria-label="진단 대상 시스템 선택">
             <button v-for="target in item.choices" :key="target" type="button"
                     :disabled="sending" @click="chooseTarget(target)">{{ target }}</button>
             <button type="button" :disabled="sending" @click="chooseTarget('취소')">취소</button>
+          </div>
+          <div v-if="!item.streaming" class="answer-meta">
+            <span v-if="item.validationLabel" class="validation-label" :class="item.validationStatus" role="status">{{ item.validationLabel }}</span>
+            <button type="button" class="copy" aria-label="답변 복사" title="복사" @click="copyText(item)">
+              <span v-if="item.copied" role="status">{{ item.copied }}</span>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -271,8 +328,11 @@ const escapeHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/
 marked.use({ breaks: true, renderer: { html: html => escapeHtml(html) } });
 
 // LLM 답변은 신뢰할 수 없는 입력이므로 마크다운 변환 결과를 반드시 정화한 뒤 v-html에 넣는다.
+// 코드 블록마다 복사 버튼을 단다. 정화가 끝난 뒤 고정 문자열만 덧붙이므로 답변 내용이 끼어들 수 없다.
 function renderMarkdown(text) {
-  return DOMPurify.sanitize(marked.parse(text || ''));
+  return DOMPurify.sanitize(marked.parse(text || ''))
+    .replace(/<pre>/g, '<div class="code-block"><button type="button" class="copy code-copy">복사</button><pre>')
+    .replace(/<\/pre>/g, '</pre></div>');
 }
 
 const BACKEND_NAMES = { openai: 'OpenAI', ollama: 'Ollama(로컬)' };
@@ -409,8 +469,22 @@ createApp({
       const url = `/chat/stream?message=${encodeURIComponent(text)}&thread_id=${encodeURIComponent(thread)}`;
       const es = new EventSource(url);
       let streamItem = null;
-      let streamAttempt = null;   // write_node 재작성(attempt 증가) 시 새 말풍선으로 끊는다
+      let streamAttempt = null;   // write_node 재작성(attempt 증가) 시 같은 말풍선을 비우고 다시 채운다
       let choices = [];
+      // 토큰마다 마크다운 전체를 다시 그리지 않도록, 한 프레임 동안 들어온 토큰을 모아 한 번에 붙인다.
+      let pendingDelta = '';
+      let flushFrame = 0;
+      const flushDelta = () => {
+        flushFrame = 0;
+        if (streamItem && pendingDelta) streamItem.text += pendingDelta;
+        pendingDelta = '';
+        scrollToBottom();
+      };
+      const dropPendingDelta = () => {
+        cancelAnimationFrame(flushFrame);
+        flushFrame = 0;
+        pendingDelta = '';
+      };
 
       es.onmessage = (event) => {
         if (event.data === '[DONE]') { es.close(); sending.value = false; stepsItem.finished = true; refreshThreads(); return; }
@@ -423,16 +497,20 @@ createApp({
         if (e.type === 'AnswerToken' || e.type === 'FinalAnswer') stepsItem.answering = true;
         if (e.type === 'AnswerToken') {
           if (!streamItem) {
-            streamItem = reactive({ id: nextId++, kind: 'agent', text: '' });
+            streamItem = reactive({ id: nextId++, kind: 'agent', text: '', streaming: true });
             log.value.push(streamItem);
           }
           if (streamAttempt !== e.attempt) {   // 재작성 초안은 같은 말풍선을 처음부터 다시 채운다
+            dropPendingDelta();
             streamItem.text = '';
             streamAttempt = e.attempt;
           }
-          if (e.phase === 'draft') streamItem.validationLabel = '검증 전 초안 · 최종 답변을 기다려 주세요';
-          streamItem.text += e.delta;
-          scrollToBottom();
+          if (e.phase === 'draft') {
+            streamItem.validationLabel = '검증 전 초안 · 최종 답변을 기다려 주세요';
+            streamItem.validationStatus = 'draft';
+          }
+          pendingDelta += e.delta;
+          if (!flushFrame) flushFrame = requestAnimationFrame(flushDelta);
           return;
         }
 
@@ -442,8 +520,10 @@ createApp({
             streamItem.validationStatus = e.status;
           } else {
             // 반려된 초안은 사용자가 따라 하지 않도록 즉시 지우고 재작성 토큰을 기다린다.
+            dropPendingDelta();
             streamItem.text = '';
             streamItem.validationLabel = '답변을 보완하는 중…';
+            streamItem.validationStatus = 'revising';
           }
         }
 
@@ -452,7 +532,9 @@ createApp({
             streamItem = reactive({ id: nextId++, kind: 'agent', text: '' });
             log.value.push(streamItem);
           }
+          dropPendingDelta();
           streamItem.text = e.reply;   // 토큰 합산 결과와 서버의 최종 텍스트를 일치시킨다
+          streamItem.streaming = false;
           streamItem.validationLabel = e.validation_status === 'limited' ? '제한된 답변 · 원인과 조치 미확정'
             : e.validation_status === 'passed' ? '검증 완료' : '';
           streamItem.validationStatus = e.validation_status;
@@ -473,6 +555,8 @@ createApp({
 
       es.onerror = () => {
         es.close(); sending.value = false; stepsItem.finished = true;
+        dropPendingDelta();
+        if (streamItem) streamItem.streaming = false;
         log.value.push({ id: nextId++, kind: 'error', retryText: text });
         scrollToBottom();
       };
@@ -481,6 +565,31 @@ createApp({
     function retry(text) {
       input.value = text;
       onSubmit();
+    }
+
+    // 보낸 질문은 다시 고쳐 쓸 수 있게, 답변은 조치 명령을 그대로 붙여 쓸 수 있게
+    // 화면 렌더링 전의 원문(마크다운)을 복사한다.
+    async function copyText(item) {
+      try {
+        await navigator.clipboard.writeText(item.text);
+        item.copied = '복사됨';
+      } catch {
+        item.copied = '복사 실패';
+      }
+      setTimeout(() => { item.copied = ''; }, 1500);
+    }
+
+    // 코드 블록 복사 버튼은 v-html로 그려져 Vue 이벤트를 걸 수 없으므로, 답변 영역에서 클릭을 받아 처리한다.
+    async function copyCodeBlock(e) {
+      const btn = e.target.closest('.code-copy');
+      if (!btn) return;
+      try {
+        await navigator.clipboard.writeText(btn.nextElementSibling.textContent);
+        btn.textContent = '복사됨';
+      } catch {
+        btn.textContent = '복사 실패';
+      }
+      setTimeout(() => { btn.textContent = '복사'; }, 1500);
     }
 
     function chooseTarget(target) {
@@ -498,7 +607,7 @@ createApp({
       switchThread(newThread());
     }
 
-    return { backend, log, input, sending, logEl, inputEl, onEnter, onSubmit, chooseTarget, retry, ask, newChat,
+    return { backend, log, input, sending, logEl, inputEl, onEnter, onSubmit, chooseTarget, copyText, copyCodeBlock, retry, ask, newChat,
              threadsOpen, threads, isCurrent, openThread, renderMarkdown, EXAMPLES };
   },
 }).mount('#app');
