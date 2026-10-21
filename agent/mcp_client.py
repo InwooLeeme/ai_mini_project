@@ -1,8 +1,8 @@
 """호출 시간과 응답 형식을 검증하는 공용 stdio MCP 클라이언트.
 
 SDK의 stdio/세션 컨텍스트가 AnyIO 취소 범위를 소유하므로, 연결을 시작한
-태스크에서 연결을 종료해야 한다. 요청은 공용 잠금을 사용하며 잠금 대기도
-제한 시간에 포함한다. 재시도 정책은 retry.py에서 별도로 관리한다.
+태스크에서 연결을 종료해야 한다. 연결 수명과 요청 동시성을 별도로 관리하며
+서버별 요청 슬롯 대기도 제한 시간에 포함한다. 재시도 정책은 retry.py가 관리한다.
 """
 import asyncio
 import json
@@ -11,13 +11,14 @@ import math
 import os
 import re
 import sys
+import time
 from contextlib import AsyncExitStack
 from datetime import datetime
 from numbers import Real
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from langsmith import traceable
+from langsmith import get_current_run_tree, trace, traceable
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.shared import exceptions as mcp_exceptions
@@ -174,7 +175,7 @@ class MCPClient:
 
     def __init__(self, flaky_first_tool_call: bool = False,
                  server_scripts: dict[str, Path] | None = None, *,
-                 timeout_seconds: float = 10.0):
+                 timeout_seconds: float = 10.0, max_concurrency: int = 4):
         """서버 구성과 양수인 제한 시간을 설정하고 연결에 필요한 상태를 준비한다."""
         try:
             if not isinstance(timeout_seconds, Real) or isinstance(timeout_seconds, bool):
@@ -185,12 +186,17 @@ class MCPClient:
         except (ValueError, OverflowError):
             raise MCPCallError("invalid_input", "timeout_seconds must be a positive finite number") from None
         self.timeout_seconds = timeout_seconds
+        if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or max_concurrency < 1:
+            raise MCPCallError("invalid_input", "max_concurrency must be a positive integer")
+        self._max_concurrency = max_concurrency
         self._server_scripts = dict(DEFAULT_SERVER_SCRIPTS if server_scripts is None else server_scripts)
         for server in self._server_scripts:
             _identifier(server, "server")
         self._stack: AsyncExitStack | None = None
         self.sessions: dict[str, ClientSession] = {}
         self._lock = asyncio.Lock()
+        self._request_slots: dict[str, asyncio.Semaphore] = {}
+        self._active_requests: set[asyncio.Task] = set()
         self._flaky_pending = flaky_first_tool_call
 
     async def start(self) -> None:
@@ -233,6 +239,7 @@ class MCPClient:
                     raise MCPCallError("startup_failed", "MCP initialization failed; connection cleanup was attempted") from None
                 # 일부 서버만 연결된 상태에서 요청을 받지 않도록 성공 시 한 번에 공개한다.
                 self.sessions = sessions
+                self._request_slots = {}
                 self._stack = stack
 
     async def stop(self) -> None:
@@ -241,15 +248,24 @@ class MCPClient:
             async with self._lock:
                 stack, self._stack = self._stack, None
                 self.sessions = {}
-                if stack is not None:
+                # 새 요청을 막은 뒤 통신 중·슬롯 대기 중인 요청을 모두 정리한다.
+                # 요청의 finally는 수명 잠금을 잡지 않으므로 여기서 기다려도 교착하지 않는다.
+                requests = tuple(self._active_requests)
+                try:
+                    for request in requests:
+                        request.cancel()
                     try:
-                        await stack.aclose()
-                    except TimeoutError as error:
-                        _log_failure("all", "stop", error, cleanup_failed=True)
-                        raise
-                    except Exception as error:
-                        _log_failure("all", "stop", error, cleanup_failed=True)
-                        raise MCPCallError("shutdown_failed", "MCP connection cleanup failed") from None
+                        await asyncio.gather(*requests, return_exceptions=True)
+                    finally:
+                        self._request_slots = {}
+                        if stack is not None:
+                            await stack.aclose()
+                except TimeoutError as error:
+                    _log_failure("all", "stop", error, cleanup_failed=True)
+                    raise
+                except Exception as error:
+                    _log_failure("all", "stop", error, cleanup_failed=True)
+                    raise MCPCallError("shutdown_failed", "MCP connection cleanup failed") from None
 
     def _session(self, server):
         """요청한 서버가 준비됐는지 확인하고 사용 가능한 세션을 반환한다."""
@@ -261,22 +277,62 @@ class MCPClient:
         return self.sessions[server]
 
     async def _request(self, server, method, *args):
-        """잠금 대기와 통신 시간을 제한하고, 응답 오류와 재시도할 시간 초과를 구분한다."""
+        """서버별 슬롯 안에서 병렬 통신하며 대기·통신 시간을 별도로 기록한다."""
         self._session(server)
+        task = asyncio.current_task()
+        run = get_current_run_tree()
+        metadata = {"mcp_server": server, "operation": method,
+                    "retry_attempt": run.metadata.get("retry_attempt", 1) if run else 1}
+        started = time.perf_counter()
+        transport_started = transport_ended = None
+        outcome = "error"
         try:
-            # timeout을 잠금 바깥에 두어 다른 요청 때문에 기다리는 시간도 제한한다.
             async with asyncio.timeout(self.timeout_seconds):
+                # 잠금은 연결 확인·요청 등록에만 사용하고 통신 중에는 잡지 않는다.
                 async with self._lock:
-                    # 잠금을 기다리는 동안 stop()이 실행됐을 수 있으므로 다시 확인한다.
                     session = self._session(server)
-                    result = await getattr(session, method)(*args)
-            # 기능별 응답 해석 전에 공통 경계에서 오류 표시를 한 번만 확인한다.
-            _check_error(result)
-            return result
-        except MCPCallError:
+                    slots = self._request_slots.setdefault(
+                        server, asyncio.Semaphore(self._max_concurrency))
+                    self._active_requests.add(task)
+                async with slots:
+                    transport_started = time.perf_counter()
+                    try:
+                        with trace("mcp.transport", run_type="tool", metadata=metadata,
+                                   inputs={"server": server, "operation": method}) as transport_run:
+                            result = await self._send(session, server, method, *args)
+                            # trace 컨텍스트는 성공 시 end를 명시해야 로컬 추적도 완결된다.
+                            transport_run.end()
+                    finally:
+                        transport_ended = time.perf_counter()
+                outcome = "success"
+                return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
             raise
         except TimeoutError as error:
+            outcome = "timeout"
+            metadata["timeout_stage"] = "queue" if transport_started is None else "transport"
             _log_failure(server, method, error)
+            raise
+        finally:
+            self._active_requests.discard(task)
+            finished = time.perf_counter()
+            metadata.update(
+                queue_ms=((transport_started or finished) - started) * 1000,
+                transport_ms=0 if transport_started is None else (
+                    (transport_ended or finished) - transport_started) * 1000,
+                outcome=outcome,
+            )
+            if run is not None:
+                run.add_metadata(metadata)
+
+    async def _send(self, session, server, method, *args):
+        """실제 SDK 호출 오류를 안전한 예외로 바꾼 뒤 통신 추적에 전달한다."""
+        try:
+            result = await getattr(session, method)(*args)
+            _check_error(result)
+            return result
+        except (MCPCallError, TimeoutError):
             raise
         except _SDK_ERROR as error:
             _log_failure(server, method, error)

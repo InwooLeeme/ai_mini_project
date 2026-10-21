@@ -90,5 +90,15 @@ class MCPEvidenceCollector:
 
         # 기존 측정과 비교할 수 있도록 탐색 시간을 제외하고 소수 둘째 자리로 유지한다.
         started = time.perf_counter()
-        results = await asyncio.gather(*(run_one(task) for task in tasks))
+        jobs = [asyncio.create_task(run_one(task)) for task in tasks]
+        try:
+            results = await asyncio.gather(*jobs)
+        except BaseException:
+            # 한 작업 실패나 요청 취소 이후 다른 수집·재시도가 남지 않도록 기다린다.
+            # gather의 입력 순서와 최초 예외를 유지한다.
+            for job in jobs:
+                if not job.done():
+                    job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+            raise
         return CollectionResult(results, round(time.perf_counter() - started, 2))

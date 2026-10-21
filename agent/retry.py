@@ -4,7 +4,7 @@ asyncio.TimeoutError(일시적)만 재시도하고, 그 외(ValueError 등 영�
 """
 import asyncio
 
-from langsmith import traceable
+from langsmith import traceable, tracing_context
 
 
 @traceable(name="with_retry")
@@ -13,7 +13,8 @@ async def with_retry(fn, *args, retries: int = 3, base_delay: float = 0.3, **kwa
     while True:
         attempt += 1
         try:
-            result = await fn(*args, **kwargs)
+            with tracing_context(metadata={"retry_attempt": attempt}):
+                result = await fn(*args, **kwargs)
             return result, attempt - 1   # (결과, 재시도 횟수)
         except asyncio.TimeoutError:
             if attempt >= retries:

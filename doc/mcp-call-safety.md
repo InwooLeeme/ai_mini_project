@@ -56,18 +56,18 @@ WARNING으로 기록한다. 서버명, 작업명, 예외 종류, 정수 SDK 오�
 ## 시간 제한과 재시도는 다른 역할
 
 ```python
-client = MCPClient()                       # 개별 작업 제한: 기본 10초
-client = MCPClient(timeout_seconds=2.0)    # 필요할 때 코드에서 설정
+client = MCPClient()                       # 개별 작업 10초, 서버별 최대 4개 동시 요청
+client = MCPClient(timeout_seconds=2.0, max_concurrency=2)
 ```
 
-Tool 호출, Resource 읽기, Prompt 요청, 목록 조회에 적용한다. 공유 연결을
-사용하기 위해 lock을 기다리는 시간도 포함한다. LLM을 포함한 진단 전체를
+Tool 호출, Resource 읽기, Prompt 요청, 목록 조회에 적용한다. 연결 수명 잠금과
+서버별 요청 슬롯을 기다리는 시간도 포함한다. LLM을 포함한 진단 전체를
 10초로 제한하는 설정은 아니다.
 
 - **timeout:** 끝나지 않는 한 번의 대기를 중단한다.
 - **retry:** 일시적인 timeout이 발생했을 때 다시 시도한다.
 
-기존 `agent/retry.py`는 유지한다. `with_retry`로 감싼 호출은 timeout에서만
+`agent/retry.py`의 재시도 정책은 유지한다. `with_retry`로 감싼 호출은 timeout에서만
 최대 3회 시도하며, 기존 대기 시간은 0.3초·0.9초다. 각 시도가 10초 제한에
 도달한다면 총 소요 시간은 대략 31.2초와 정리·스케줄링 비용이 된다.
 Resource·Prompt 호출에 새 재시도 루프를 추가하지 않는다.
@@ -77,7 +77,7 @@ SDK가 전용 MCP timeout 오류로 전달하는 경우도 기존 재시도가 �
 `MCPCallError`로 실패하며 같은 요청을 반복하지 않는다.
 
 사용자의 요청 취소는 timeout으로 바꾸지 않고 전파한다. timeout·취소 후에는
-자신이 잡았던 lock을 풀어 다음 요청을 막지 않는다. 대기하던 요청이 시간 초과되어도
+자신이 사용하던 요청 슬롯을 돌려주어 다음 요청을 막지 않는다. 대기하던 요청이 시간 초과되어도
 먼저 연결을 사용 중인 다른 요청을 취소하지 않는다.
 
 시작·종료에도 시간 제한을 적용하고, 시작에 실패하면 이미 열린 자원을 정리한다.
@@ -87,6 +87,41 @@ MCP SDK의 연결은 생성한 비동기 작업에서 닫아야 하므로 기존
 사용한다. 이 구현은 Python 3.11 이상에서 사용할 수 있다.
 timeout 이후 SDK의 프로세스 정리 시간이 추가될 수 있으므로 실제 경과 시간이
 설정값과 정확히 같다는 뜻은 아니다.
+
+## 병렬 실행과 종료
+
+연결 수명 잠금은 시작·종료와 요청 등록에만 사용한다. 실제 SDK 통신은 잠금
+밖에서 실행하며, 서버마다 별도 Semaphore로 동시 요청 수를 제한한다.
+`max_concurrency`는 양의 정수이고 기본값은 4다. 한 서버의 슬롯이 가득 차도
+다른 서버의 통신 슬롯은 사용할 수 있다.
+
+종료 시에는 새 요청을 차단하고, 진행 중이거나 슬롯을 기다리는 요청을 취소한 뒤
+종료까지 기다리고 세션을 닫는다. 연결을 시작한 태스크에서 닫는 규칙은 유지한다.
+`MCPEvidenceCollector`도 한 수집 작업이 실패하면 나머지 작업을 취소하고 정리가
+끝날 때까지 기다린다. 성공 결과의 입력 순서와 최초 예외는 유지한다.
+
+## LangSmith에서 확인하기
+
+기존 `mcp.call_tool`, `mcp.read_resource` 등 호출 추적 아래에 `mcp.transport`
+자식 구간을 남긴다. 자식 구간은 슬롯 획득 후 SDK 호출부터 응답 오류 표시 검사까지다.
+서버 내부 CPU 실행을 직접 측정하는 구간은 아니므로 서버 내부 병렬성은 아래
+stdio 통합 테스트의 서버 측 시작·종료 시각으로 검증한다.
+
+호출 추적의 metadata:
+
+| 필드 | 의미 |
+| --- | --- |
+| `mcp_server`, `operation` | 서버와 SDK 작업 이름 |
+| `retry_attempt` | 시도 번호, 1부터 시작 |
+| `queue_ms` | 연결 수명 잠금·요청 슬롯 대기 시간 |
+| `transport_ms` | 실제 요청 구간 시간, 미전송이면 0 |
+| `outcome` | 요청 단계의 success / error / timeout / cancelled |
+| `timeout_stage` | 시간 초과 시 queue 또는 transport |
+
+`outcome`은 요청 단계 기준이며 이후 도구별 본문 검증의 성공을 보장하지 않는다.
+기존 재시도 정책에 따라 queue timeout도 timeout 재시도 대상이다. 추가된 통신
+자식 구간의 입력에는 서버명·작업명만 기록하고 응답 본문은 별도로 복제하지 않는다.
+기존 상위 호출의 입력·출력 추적 설정은 유지한다.
 
 ## 이번 범위
 
@@ -101,6 +136,9 @@ timeout 이후 SDK의 프로세스 정리 시간이 추가될 수 있으므로 �
 ## 검증 방법
 
 ```sh
+sh sh/lint.sh
+sh sh/test.sh -k 'test_mcp_safety or test_mcp_concurrency or test_evidence'
+
 PYTHONDONTWRITEBYTECODE=1 LANGSMITH_TRACING=false LANGCHAIN_TRACING_V2=false \
   .venv/bin/python -m unittest discover -s tests -p 'test_mcp_safety.py' -v
 
@@ -111,6 +149,12 @@ PYTHONDONTWRITEBYTECODE=1 LANGSMITH_TRACING=false LANGCHAIN_TRACING_V2=false \
 외부 LLM 호출과 LangSmith 전송 없이 입력·오류 응답·수치 검증·timeout·취소·
 재시도·연결 정리를 확인한다. 로컬 stdio MCP를 사용하는 통합 확인도 포함한다.
 속도나 답변 정확도가 개선됐다는 성능 평가는 이 테스트와 별도로 수행해야 한다.
+
+`tests/test_mcp_concurrency.py`는 별도 FastMCP 프로세스와 실제 stdio 세션을
+사용한다. 두 요청이 서버 안에서 모두 시작돼야 풀리는 Event와 서버 측 실행
+시각으로 병렬성을 확인한다. 동시 요청 상한, 서버 간 격리, 대기 취소, 종료 후
+재시작, 수집 실패 정리와 로컬 LangSmith 추적도 검사한다. 로컬 추적 검증은
+클라우드에 전송하지 않는다.
 
 2026-10-20 검증: 기존 29개와 신규 안전성 27개를 합한 **56개 테스트 통과**.
 실제 stdio timeout 이후 같은 연결의 다음 호출, 시작 timeout 이후 자식 프로세스
