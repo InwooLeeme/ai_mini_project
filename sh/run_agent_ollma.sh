@@ -7,6 +7,8 @@
 #   - curl로 /chat, /chat/stream 호출해보기 (manual_ollma.md 사용 예 1~4)
 #   - web_demo_server.py를 추가로 띄워 브라우저 채팅 화면으로 써보기 (사용 예 5)
 #
+# 대화 이력을 지우고 시작하려면 --reset 옵션을 준다 (예: bash sh/run_agent_ollma.sh --reset).
+#
 # 종료하려면 이 터미널에서 Ctrl+C.
 #
 set -euo pipefail
@@ -62,7 +64,11 @@ done
 
 # ── 2) 이전 실행 정리 ──────────────────────────────────────────────────
 lsof -ti:8100 | xargs kill -9 2>/dev/null || true
-rm -f session.db
+# 대화 이력(session.db)은 재시작해도 유지한다. --reset을 주면 지우고 새로 시작한다.
+if [ "${1:-}" = "--reset" ]; then
+    rm -f session.db
+    echo "session.db를 지웠습니다 (--reset)."
+fi
 
 cleanup() {
     echo

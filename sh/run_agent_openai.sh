@@ -10,6 +10,8 @@
 # ⚠️ 실제 OpenAI 계정에 과금되는 원격 API 호출이다 — run_agent_ollma.sh(로컬 추론)와
 # 달리, 이 스크립트가 떠 있는 동안 보내는 요청마다 실제 비용이 청구된다.
 #
+# 대화 이력을 지우고 시작하려면 --reset 옵션을 준다 (예: bash sh/run_agent_openai.sh --reset).
+#
 # 종료하려면 이 터미널에서 Ctrl+C.
 #
 set -euo pipefail
@@ -50,7 +52,11 @@ esac
 
 # ── 1) 이전 실행 정리 ──────────────────────────────────────────────────
 lsof -ti:8100 | xargs kill -9 2>/dev/null || true
-rm -f session.db
+# 대화 이력(session.db)은 재시작해도 유지한다. --reset을 주면 지우고 새로 시작한다.
+if [ "${1:-}" = "--reset" ]; then
+    rm -f session.db
+    echo "session.db를 지웠습니다 (--reset)."
+fi
 
 cleanup() {
     echo
