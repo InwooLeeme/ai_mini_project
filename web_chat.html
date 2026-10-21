@@ -2,6 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>운영 에이전트 채팅 (Vue)</title>
 <style>
   :root {
@@ -46,6 +47,7 @@
   .backend-status.real { color: var(--ok); background: rgba(126, 231, 135, 0.1); }
   .backend-status.test { color: var(--warn); background: rgba(240, 163, 94, 0.12); }
   .backend-status.offline { color: var(--bad); background: rgba(244, 112, 103, 0.12); }
+  .new-chat { font-weight: 500; }
   #log {
     flex: 1; min-height: 0;   /* flex 자식 기본 최소높이(콘텐츠 크기)를 풀어줘야
                                  내용이 길어져도 바디가 안 늘어나고 여기서만 스크롤됨 */
@@ -114,6 +116,10 @@
   }
   .steps .step::before { content: "⏳ "; }
   .steps .step.done::before { content: "✓ "; color: var(--ok); }
+  /* 첫 진행 단계나 답변 토큰이 오기 전까지 요청이 처리 중임을 보여준다. */
+  .thinking { flex-shrink: 0; font-size: 13px; color: var(--muted); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+  @media (prefers-reduced-motion: reduce) { .thinking { animation: none; } }
   .prompt-box { margin-top: -12px; }
   .prompt-box pre {
     margin: 8px 0 0; padding: 12px 14px; border-radius: 12px;
@@ -159,6 +165,7 @@
 <div id="app">
   <header>운영 인시던트 대응 에이전트
     <span class="backend-status" :class="backend.state" role="status">{{ backend.text }}</span>
+    <button type="button" class="new-chat" :disabled="sending" @click="newChat">새 대화</button>
   </header>
   <div id="log" ref="logEl">
     <div v-if="!log.length" class="welcome">
@@ -180,6 +187,7 @@
                :class="{ done: item.finished || i < item.steps.length - 1 }">{{ step }}</div>
         </div>
       </details>
+      <div v-else-if="item.kind === 'steps' && !item.finished && !item.answering" class="thinking" role="status">생각 중…</div>
 
       <div v-else-if="item.kind === 'agent'" class="row agent" :class="{ rejected: item.validationStatus === 'rejected' }">
         <div class="bubble"><div v-if="item.validationLabel" class="validation-label" :class="item.validationStatus" role="status">{{ item.validationLabel }}</div><div class="md" v-html="renderMarkdown(item.text)"></div>
@@ -299,8 +307,10 @@ createApp({
     });
 
     // 서버에 저장된 이 thread의 이전 대화를 다시 그린다. 진행 단계·검증 표시는 저장되지 않아 말풍선만 복원된다.
-    fetch(`/history?thread_id=${encodeURIComponent(thread)}`).then(r => r.json()).then(h => {
-      if (log.value.length) return;   // 불러오는 사이 새 질문을 보냈으면 화면을 덮어쓰지 않는다
+    const historyThread = thread;
+    fetch(`/history?thread_id=${encodeURIComponent(historyThread)}`).then(r => r.json()).then(h => {
+      // 불러오는 사이 새 질문을 보냈거나 새 대화를 시작했으면 화면을 덮어쓰지 않는다
+      if (log.value.length || thread !== historyThread) return;
       log.value = h.messages.map(m => ({ id: nextId++, kind: m.role === 'user' ? 'user' : 'agent', text: m.content }));
       scrollToBottom();
     }).catch(() => {});
@@ -356,6 +366,7 @@ createApp({
         if (e.type === 'TargetConfirmationRequired') {
           choices = [...new Set([...(e.suggestions || []), ...e.choices])];
         }
+        if (e.type === 'AnswerToken' || e.type === 'FinalAnswer') stepsItem.answering = true;
         if (e.type === 'AnswerToken') {
           if (!streamItem || streamAttempt !== e.attempt) {
             streamItem = reactive({ id: nextId++, kind: 'agent', text: '' });
@@ -421,7 +432,15 @@ createApp({
       onSubmit();
     }
 
-    return { backend, log, input, sending, logEl, inputEl, onEnter, onSubmit, chooseTarget, retry, ask, renderMarkdown, EXAMPLES };
+    // 이전 대화는 서버에 그대로 남고, 새 thread_id로 빈 대화를 시작한다.
+    function newChat() {
+      thread = newThread();
+      try { localStorage.setItem('chat-thread-id', thread); } catch {}
+      log.value = [];
+      input.value = '';
+    }
+
+    return { backend, log, input, sending, logEl, inputEl, onEnter, onSubmit, chooseTarget, retry, ask, newChat, renderMarkdown, EXAMPLES };
   },
 }).mount('#app');
 </script>
