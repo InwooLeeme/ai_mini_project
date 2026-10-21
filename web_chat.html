@@ -275,7 +275,16 @@ createApp({
     const sending = ref(false);
     const logEl = ref(null);
     const inputEl = ref(null);
-    const thread = 't-web-' + Math.random().toString(36).slice(2, 8);
+    // 새로고침·서버 재시작 뒤에도 같은 대화 이력을 이어 쓰도록 thread_id를 브라우저에 보관한다.
+    // 저장소를 못 쓰는 환경(사생활 보호 모드 등)에서는 이번 페이지에서만 쓰는 ID로 대신한다.
+    const newThread = () => 't-web-' + Math.random().toString(36).slice(2, 8);
+    let thread;
+    try {
+      thread = localStorage.getItem('chat-thread-id') || newThread();
+      localStorage.setItem('chat-thread-id', thread);
+    } catch {
+      thread = newThread();
+    }
     let nextId = 0;
 
     // fake 백엔드의 답도 겉보기엔 정상 답변이라, 실제 모델인지 테스트 모드인지 헤더에서 구분해 준다.
@@ -288,6 +297,13 @@ createApp({
     }).catch(() => {
       backend.value = { state: 'offline', text: '서버 연결 안 됨' };
     });
+
+    // 서버에 저장된 이 thread의 이전 대화를 다시 그린다. 진행 단계·검증 표시는 저장되지 않아 말풍선만 복원된다.
+    fetch(`/history?thread_id=${encodeURIComponent(thread)}`).then(r => r.json()).then(h => {
+      if (log.value.length) return;   // 불러오는 사이 새 질문을 보냈으면 화면을 덮어쓰지 않는다
+      log.value = h.messages.map(m => ({ id: nextId++, kind: m.role === 'user' ? 'user' : 'agent', text: m.content }));
+      scrollToBottom();
+    }).catch(() => {});
 
     // 입력창은 내용만큼 늘어나되 CSS max-height에서 멈추고, 그 뒤로는 안에서 스크롤한다.
     // 타이핑뿐 아니라 보내기 후 비우기·예시 버튼 등 코드로 값이 바뀔 때도 높이를 맞춘다.
