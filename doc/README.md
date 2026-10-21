@@ -1,279 +1,261 @@
-# all_total_vue — 운영 인시던트 대응 에이전트 (Vue 프론트엔드 버전)
+# 아키텍처 가이드
 
-`all_total`과 백엔드(server.py, agent/, mcp_server.py 등)는 완전히 동일하고, 브라우저
-채팅 화면(`web_chat.html`)만 바닐라 JS 대신 **Vue 3**(CDN 글로벌 빌드, 별도 빌드 단계
-없음)로 재작성한 버전이다. 나머지 설명은 원본 `all_total`과 같다.
+운영 장애 질문을 받아 모니터링 수치와 런북을 근거로 진단 답변을 만드는 에이전트의 **내부 구조와 처리 흐름**을 설명합니다.
+설치·실행·환경 변수는 [프로젝트 README](../README.md)를 먼저 보세요.
 
-Wave 1~15가 각각 증명한 패턴(싱글턴·MCP·SSE·라우팅·게이트·재계획·검증·재시도·병렬·비용분리·
-세션·주입·버전 토글·가드)을 전부 조립한 **실제 동작하는 에이전트 서비스**다. LLM 자리는
-`fake`(결정론)/`ollama`(로컬 실모델)/`openai`(실제 API) 세 백엔드 중 아무거나 꽂을 수 있고,
-요청 한 건이 처리되는 전 과정은 LangSmith에 계층 트리로 기록·평가·피드백된다.
+> 백엔드는 원본 `all_total`과 같고, 채팅 화면(`web_chat.html`)만 Vue 3(CDN, 빌드 단계 없음)로 다시 작성했습니다.
 
-## 성능 비교용 baseline
+**목차**
 
-baseline 준비 시 원본에서 모니터링 난수와 조사 태스크의 인위적 지연을 제거하고,
-첫 MCP 호출의 강제 실패를 기본 비활성화했다. 당시 재시도·backoff와 진단 로직은
-유지했다. 원본 보존 위치·고정 수치·검증 방법은 [baseline 안내](../baseline/README.md)를 참조한다.
-기존 매뉴얼의 강제 재시도·병렬 지연 시연은 원본 동작을 설명하는 자료다.
+1. [구성 요소](#1-구성-요소)
+2. [요청 처리 흐름](#2-요청-처리-흐름)
+3. [핵심 설계](#3-핵심-설계)
+4. [유스케이스별 시퀀스](#4-유스케이스별-시퀀스)
+5. [디렉터리 구조](#5-디렉터리-구조)
+6. [관련 문서](#6-관련-문서)
 
-평가 코드·고정 데이터셋·테스트·안내 문서는 Git에 포함한다. 계획 문서·측정 결과·
-캡처·baseline 압축본과 복원용 메타데이터는 로컬에 보존한다.
-새 체크아웃의 테스트 방법과 별도 보존본이 필요한 Before 재측정 절차는
-[평가 코드 배포 안내](../eval/REPOSITORY_USAGE.md)를 참조한다.
+---
 
-## 자동화 테스트·LangSmith 비교 평가
+## 1. 구성 요소
 
-`sh sh/lint.sh`로 Ruff 정적 검사를, `sh sh/test.sh`로 외부 모델 호출 없이 회귀 테스트와 평가 기능을 검사한다.
-기존 Before와 현재 구현의 동일 조건 비교, 수동 판정, LangSmith 실험 게시 방법은
-[평가 실행 안내](../evaluation/README.md)를 참조한다. 실제 평가는 별도의 명시적 실행이며,
-자동화 테스트나 CI가 유료 모델을 호출하지 않는다.
+```mermaid
+flowchart LR
+    Browser["브라우저<br/>web_chat.html"] --> Proxy["web_demo_server.py<br/>:8600"]
+    Proxy --> API
+    Curl["curl"] --> API["server.py<br/>FastAPI :8100"]
 
-## 진단 답변 내용 검증
-
-v2는 초안을 관측·런북과 대조하고, 반려 시 구체적 피드백으로 재작성한다.
-최대 시도 또는 검증 불가 시 확인된 관측만 안내하며 강제로 합격시키지 않는다.
-검사 범위·비용·스트리밍 초안 표시는 [내용 검증 안내](answer-validation.md)를 참조한다.
-
-## MCP 호출 안전성
-
-현재 코드는 baseline 이후 MCP 입력·응답 검증과 기본 10초 호출 제한,
-오류 분류·연결 정리를 보강했다. 기존 timeout 재시도 정책은 유지한다.
-변경 이유·예제·검증 명령은 [MCP 호출 안전성 안내](mcp-call-safety.md)를 참조한다.
-동결된 baseline 보존본과 과거 측정 결과에는 이 변경을 적용하지 않는다.
-
-## 주요 실행 방법
-
-**맨 처음 한 번만**: 이 폴더를 처음 받았다면(학생 배포 등) `.venv`부터 만든다.
-
-```bash
-bash sh/setup_venv.sh
+    API --> Graph["agent/graph.py<br/>LangGraph v2"]
+    Graph --> MCP["MCP 서버<br/>ops · docs"]
+    Graph --> RAG["agent/rag.py<br/>런북 RAG"]
+    Graph --> LLM["LLM 백엔드<br/>fake · ollama · openai"]
+    Graph --> DB[("session.db")]
+    Graph -.-> LS["LangSmith"]
 ```
 
-| 방법 | 명령 | 비용 | 용도 |
-|---|---|---|---|
-| Python 가상환경 준비 | `bash sh/setup_venv.sh` | 없음 | `.venv` 생성 + `requirements.txt` 설치(최초 1회, 이미 있으면 설치만 재확인) |
-| 로컬 Ollama 환경 준비 | `bash sh/setup_ollama.sh` | 없음(로컬 추론) | 모델(`qwen3:0.6b`/`8b`)이 이미 있으면 재사용, 없으면 새로 pull — `OLLAMA_FORCE_REFRESH=1`을 주면 지우고 재구성 |
-| 에이전트만 기동 (로컬) | `bash sh/run_agent_ollma.sh` | 없음 | 서버만 띄워두고 직접 curl/웹으로 테스트 |
-| 에이전트만 기동 (OpenAI) | `bash sh/run_agent_openai.sh` | **과금** | 위와 동일하되 실제 API 사용 (y/N 확인) |
-| 브라우저 채팅 화면 | `bash sh/run_frontend.sh` (서버 기동 후) | 백엔드에 따름 | `http://localhost:8600`에서 실제 채팅 UI로 사용 |
+| 구성 요소 | 역할 |
+|---|---|
+| `server.py` | `/health` · `/version` · `/chat` · `/chat/stream`(SSE) 제공. 시작 시 실행 환경을 한 번 조립 |
+| `agent/graph.py` | 요청 한 건을 처리하는 LangGraph 상태 그래프 |
+| `mcp_server.py` (ops) | 모니터링 조회(Tool), 런북 원문(Resource), 진단 절차(Prompt) 제공 |
+| `mcp_server_docs.py` (docs) | API 문서만 제공하는 decoy. 멀티 서버 탐색 확인용이며 에이전트는 사용하지 않음 |
+| `agent/rag.py` | 질문·관측으로 런북을 검색하고 근거 여부를 판정 |
+| `session.db` | 대화 이력과 대상 확인 대기 상태 저장 (SQLite) |
+| LangSmith | 노드별 계층 trace, 평가, 피드백 기록 |
 
-`run_agent_*.sh`/`run_frontend.sh`는 `.venv`가 이미 있다는 가정 하에 PATH에
-꽂아 쓰기만 한다(`.venv`가 없으면 시스템 `python3`로 조용히 떨어져 패키지
-누락 오류가 날 수 있다) — `setup_venv.sh`를 먼저 돌려야 하는 이유다.
+---
 
-모든 스크립트는 `.env`가 없으면 `cp .env.example .env` 후 본인 API 키를 채우라는 안내를
-출력하고 종료하며(외부 경로에 의존하지 않음 — 이 폴더만 떼어가도 그대로 동작),
-LangSmith 프로젝트를 백엔드별로 분리해 기록한다(`capstone-all-total[-ollama|-openai]`).
-
-> 더 쉬운 설명과 실제 캡처 화면이 필요하면 [manual_ollma.md](manual_ollma.md)(로컬
-> 실모델) · [manual_openai.md](manual_openai.md)(OpenAI API)를 참고.
-
-## 아키텍처 구성도
+## 2. 요청 처리 흐름
 
 ```mermaid
 flowchart TB
-    User["사용자 / curl"] -->|"POST /chat, GET /chat/stream"| API
-    Browser["브라우저 (web_chat.html)"] -->|"same-origin"| Proxy["web_demo_server.py<br/>(프록시, :8600)"]
-    Proxy -->|"POST /chat, GET /chat/stream"| API
-
-    subgraph Server["server.py — FastAPI (:8100)"]
-        API["/health · /version<br/>/chat · /chat/stream"]
-        Lifespan["lifespan: 서버 수명 동안<br/>Agent 번들 1회 생성"]
-    end
-
-    API --> Graph
-
-    subgraph Graph["agent/graph.py — LangGraph StateGraph (v2)"]
-        Route["route"] -->|chat| ChatAnswer["chat_answer"]
-        Route -->|incident| Plan["plan"]
-        Plan --> Gate["gate"]
-        Gate --> Research["research"]
-        Research --> ReplanCheck["replan_check"]
-        ReplanCheck -->|부족| Research
-        ReplanCheck -->|충분| Analysis["analysis<br/>(task 없으면 내부 스킵)"]
-        Analysis --> Write["write"]
-        Write --> Validate["validate"]
-        Validate -->|불합격| Write
-        Validate -->|합격| Finalize["finalize"]
-    end
-
-    API -. "SUPERVISOR_VERSION=v1" .-> V1["agent/supervisor_v1.py<br/>(legacy 선형 파이프라인)"]
-
-    Plan -. "find_prompt로 서버 탐색 후<br/>MCP Prompt 요청" .-> MCPClient
-    Research -->|"find_resource_template로 서버 탐색 후<br/>stdio subprocess 요청"| MCPClient
-
-    subgraph MCPClient["agent/mcp_client.py — 다중 MCP 세션"]
-        subgraph OpsServer["mcp_server.py (server=&quot;ops&quot;, 실사용)"]
-            Tool["Tool: get_monitoring_status"]
-            Resource["Resource: runbook://incident-response/{type}"]
-            Prompt["Prompt: incident_analysis_prompt"]
-        end
-        subgraph DocsServer["mcp_server_docs.py (server=&quot;docs&quot;, decoy)"]
-            DocsResource["Resource: docs://api-reference/{section}<br/>(agent는 사용 안 함)"]
-        end
-    end
-
-    Lifespan --> Deps["SupervisorDeps"]
-    Deps --> LLM["fast_llm / quality_llm<br/>(fake · ollama · openai 중 택1)"]
-    Deps --> Session["SqliteSessionStore<br/>(session.db)"]
-
-    Graph --> Trace["LangSmith<br/>(계층 트리 trace · Dataset 평가 · Feedback)"]
+    Start(["요청"]) --> Prepare["prepare_request"]
+    Prepare --> Route{"route"}
+    Route -->|일반 대화| Chat["chat_answer"] --> End1(["응답"])
+    Route -->|장애 진단| Resolve{"resolve_targets"}
+    Resolve -->|대상 불확실| Ask(["선택지 반환"])
+    Resolve -->|대상 확정| Plan["plan"] --> Gate["gate"] --> Research["research"]
+    Research --> Replan["replan_check<br/>RAG 검색 ∥ analysis"]
+    Replan --> Write["write"] --> Validate{"validate"}
+    Validate -->|반려| Write
+    Validate -->|합격 · 제한된 답변| Finalize["finalize"] --> End2(["응답"])
 ```
 
-- **싱글턴**: `server.py`의 `lifespan`에서 `SupervisorDeps`(LLM·세션·MCP 연결)를 정확히
-  1회 생성해 `app.state`로 공유한다 — 요청마다 재생성하지 않는다.
-- **백엔드 교체**: `LLM_BACKEND` 환경변수 하나로 `fake_llm.py`/`ollama_llm.py`/
-  `openai_llm.py`가 바뀌어 꽂히고, 그래프·MCP·세션 코드는 전혀 바뀌지 않는다.
-- **버전 토글**: `SUPERVISOR_VERSION=v1`이면 라우팅·게이트·재계획·검증이 없는 legacy
-  선형 파이프라인(`supervisor_v1.py`)으로, 재배포 없이 환경변수만으로 전환된다.
-- **MCP는 별도 프로세스**: `mcp_server.py`(ops)가 stdio subprocess로 떠서 서버 수명 동안
-  재사용되며, 모니터링 조회(Tool)·대응 매뉴얼(Resource)·진단 절차(Prompt) 세 가지
-  capability를 모두 실사용한다.
-- **MCP 멀티 서버 탐색**: `mcp_client.py`는 `ops`(mcp_server.py, 실사용)·`docs`
-  (mcp_server_docs.py, 내부 API 문서 Resource만 제공하는 decoy) 두 서버에 동시
-  연결한다. `plan`/`research` 노드는 어느 서버가 필요한 prompt/resource를 들고
-  있는지 코드에 하드코딩하지 않고, `find_prompt()`/`find_resource_template()`로
-  연결된 서버들을 먼저 조회한 뒤에야 그 서버로 요청을 보낸다.
-- **분석 단계 분리**: `replan_check`가 조사 결과가 충분하다고 판단하면 항상
-  `analysis` 노드로 넘어가지만, gate가 살려둔 `agent=="analysis"` task가 없으면
-  `analysis_node`가 내부적으로 스킵하고 바로 `write`로 넘어간다 — `needs_analysis`가
-  실제로 유효한 경우에만 수집된 모니터링 결과들을 비교 분석한다.
+| 노드 | 하는 일 |
+|---|---|
+| `prepare_request` | 대상 확인을 기다리던 대화면 사용자의 선택·취소·새 질문을 구분 |
+| `route` | 일반 대화와 장애 진단을 분류 |
+| `chat_answer` | 진단 파이프라인 없이 바로 답변 |
+| `resolve_targets` | 진단 대상 시스템을 확정. 불확실하면 조사하지 않고 선택지를 반환 |
+| `plan` | MCP Prompt로 진단 절차를 받아 할 일 목록 작성 |
+| `gate` | 불필요한 작업 제거 |
+| `research` | 대상 시스템의 모니터링 수치·알림 수집 |
+| `replan_check` | 런북 RAG 검색과 비교 분석(`analysis`)을 동시에 실행 |
+| `write` | 수집한 근거로 답변 초안 작성 |
+| `validate` | 초안을 관측·런북과 대조. 반려하면 피드백과 함께 `write`로 되돌림 |
+| `finalize` | 최종 답변 확정, 대상 확인 대기 상태 정리 |
 
-## 주요 유스케이스별 고수준 시퀀스 다이어그램
+`SUPERVISOR_VERSION=v1`이면 이 그래프 대신 라우팅·검증·RAG가 없는 legacy 선형 파이프라인(`agent/supervisor_v1.py`)을 사용합니다.
 
-### 1. 가벼운 대화
+---
+
+## 3. 핵심 설계
+
+| 설계 | 내용 |
+|---|---|
+| **실행 환경 1회 조립** | `server.py`의 lifespan이 `agent/runtime.py`로 LLM·MCP 연결·세션·RAG 색인·Validator를 한 번만 만들고, 종료 시 정리합니다. |
+| **환경 변수로 교체** | `LLM_BACKEND`, `RAG_BACKEND`, `SUPERVISOR_VERSION`만 바꾸면 되고 그래프 코드는 바뀌지 않습니다. |
+| **대상 확인 후 조사** | 대상이 불확실하면 MCP·RAG·작성 모델을 호출하지 않습니다. 사용자가 고르면 원래 증상으로 진단을 재개합니다. |
+| **MCP 서버 탐색** | 어느 서버가 필요한 prompt·resource를 가졌는지 하드코딩하지 않고 `find_prompt()` · `find_resource_template()`로 먼저 찾습니다. |
+| **근거 없으면 고르지 않음** | RAG는 시스템별 상위 3개 후보를 찾고, 선택 모델이 시스템마다 근거를 판정합니다. 근거가 없으면 런북을 임의로 붙이지 않습니다. |
+| **필요할 때만 분석** | `analysis`는 명시적 비교 요청과 서로 다른 두 시스템의 관측이 모두 있을 때만 모델을 호출합니다. |
+| **강제 합격 없음** | 검증을 끝내 통과하지 못하면 확인된 관측만 담은 제한된 답변을 반환합니다. |
+
+---
+
+## 4. 유스케이스별 시퀀스
+
+### 4.1 일반 대화
 
 ```mermaid
 sequenceDiagram
     participant U as 사용자
     participant S as server.py
-    participant G as graph (route)
+    participant G as graph
 
-    U->>S: POST /chat ("안녕하세요, 제 이름은 ...")
-    S->>G: route 노드 실행
-    G-->>S: route=chat (무거운 파이프라인 건너뜀)
-    S-->>U: 바로 답변, task_count=0
+    U->>S: POST /chat ("안녕하세요")
+    S->>G: route
+    G-->>S: chat — 진단 파이프라인 생략
+    S-->>U: 답변 (task_count=0)
 ```
 
-### 2. 장애 진단 요청
+### 4.2 장애 진단
 
 ```mermaid
 sequenceDiagram
     participant U as 사용자
     participant G as graph
-    participant M as MCP 서버군 (ops+docs)
+    participant M as MCP
+    participant R as RAG
 
-    U->>G: POST /chat ("OO 서비스가 이상해요")
-    G->>M: plan — find_prompt로 서버 탐색 후 절차 프롬프트 요청, 할 일 목록 수립
+    U->>G: "payments-service CPU가 이상해요"
+    G->>G: resolve_targets — 대상 확정
+    G->>M: plan — 진단 절차 Prompt
     G->>G: gate — 불필요한 작업 제거
-    G->>M: research — find_resource_template로 서버 탐색 후 모니터링 조회(Tool) + 매뉴얼 조회(Resource)
-    M-->>G: 실측 수치 + runbook 본문
-    G->>G: replan_check — 부족하면 조사 추가
-    G->>G: analysis — needs_analysis일 때만 수집 결과 비교 분석
-    G->>G: write → validate (형식 미달 시 반려·재작성)
-    G-->>U: 근거 기반 진단 결과
+    G->>M: research — 모니터링 조회
+    M-->>G: 수치 · 알림
+    par replan_check
+        G->>R: 질문 + 관측으로 런북 검색
+        R-->>G: 근거 런북 (없으면 빈 결과)
+    and
+        G->>G: analysis — 비교 요청일 때만
+    end
+    loop 검증 통과 또는 최대 시도까지
+        G->>G: write → validate
+    end
+    G-->>U: 근거 기반 진단
 ```
 
-### 3. 실시간 진행 상황 스트리밍
+### 4.3 대상 시스템 확인
 
 ```mermaid
 sequenceDiagram
     participant U as 사용자
-    participant S as server.py (/chat/stream)
+    participant G as graph
+    participant DB as session.db
+
+    U->>G: "CPU 급증 원인 진단해주세요"
+    G->>DB: 확인 대기 상태 저장
+    G-->>U: 시스템 선택지 (조사 · 모델 호출 없음)
+    U->>G: "payments-service"
+    G->>DB: 대기 상태 조회
+    G->>G: 원래 증상 + 확정 대상으로 진단
+    G-->>U: 진단 결과
+```
+
+### 4.4 실시간 스트리밍
+
+```mermaid
+sequenceDiagram
+    participant U as 사용자
+    participant S as server.py
     participant G as graph
 
-    U->>S: GET /chat/stream (SSE)
+    U->>S: GET /chat/stream
     loop 노드가 끝날 때마다
-        G-->>S: 노드 이벤트 (RouteDecided, PlanCreated, ...)
+        G-->>S: 노드 이벤트
         S-->>U: data: {event}
     end
-    G-->>S: FinalAnswer
-    S-->>U: data: {reply} → data: [DONE]
+    S-->>U: data: {reply}, data: [DONE]
 ```
 
-### 4. 서버 재시작 후 대화 기억
+### 4.5 서버 재시작 후 대화 기억
 
 ```mermaid
 sequenceDiagram
     participant U as 사용자
-    participant S1 as server.py (프로세스 A)
-    participant DB as session.db (SQLite)
-    participant S2 as server.py (프로세스 B, 재시작 후)
+    participant A as 서버 (재시작 전)
+    participant DB as session.db
+    participant B as 서버 (재시작 후)
 
-    U->>S1: "제 이름은 OOO입니다"
-    S1->>DB: 대화 이력 저장
-    S1--xS1: 프로세스 종료
-    S2->>S2: lifespan — 완전히 새로 기동
-    U->>S2: "제 이름이 뭐였죠?"
-    S2->>DB: 이력 조회
-    DB-->>S2: 이전 대화 그대로
-    S2-->>U: 이름을 정확히 기억해 답변
+    U->>A: "제 이름은 OOO입니다"
+    A->>DB: 대화 이력 저장
+    U->>B: "제 이름이 뭐였죠?"
+    B->>DB: 이력 조회
+    B-->>U: 이전 대화를 기억해 답변
 ```
 
-### 5. 웹 채팅 화면 사용
+### 4.6 웹 채팅 화면
 
 ```mermaid
 sequenceDiagram
-    participant B as 브라우저 (web_chat.html)
-    participant P as web_demo_server.py (:8600)
-    participant S as server.py (:8100)
+    participant B as 브라우저
+    participant P as web_demo_server.py
+    participant S as server.py
 
-    B->>P: GET / (정적 페이지)
-    B->>P: GET /chat/stream?message=... (same-origin, CORS 불필요)
-    P->>S: GET /chat/stream (그대로 중계)
+    B->>P: GET / (채팅 화면)
+    B->>P: GET /chat/stream (same-origin)
+    P->>S: 요청 중계
     S-->>P: SSE 이벤트
-    P-->>B: SSE 이벤트 (그대로 relay)
-    B->>B: 말풍선 + 진행 상태(⏳) 렌더링
+    P-->>B: SSE 이벤트 중계
 ```
 
-## 소스 디렉토리 구조
+---
 
+## 5. 디렉터리 구조
+
+```text
+.
+├── server.py              FastAPI 진입점
+├── mcp_server.py          MCP 서버 "ops"
+├── mcp_server_docs.py     MCP 서버 "docs" (decoy)
+├── web_chat.html          채팅 화면
+├── web_demo_server.py     채팅 화면 서빙 + API 프록시
+├── agent/                 에이전트 본체 (아래 표)
+├── data/                  monitoring.json, runbooks/ 6종
+├── tests/                 오프라인 자동화 테스트
+├── evaluation/            회귀 평가 · LangSmith 비교 도구
+├── eval/                  Before 측정 · RAG 평가 데이터셋
+├── baseline/              성능 비교용 baseline 보존본
+├── doc/                   문서
+└── sh/                    설치 · 실행 · 린트 · 테스트 스크립트
 ```
-all_total_vue/
-├── server.py              # FastAPI 진입점 — lifespan 싱글턴, /health·/version·/chat·/chat/stream
-├── mcp_server.py           # fastmcp 서버("ops") — Tool/Resource/Prompt (실사용, stdio subprocess)
-├── mcp_server_docs.py       # fastmcp 서버("docs") — API 문서 Resource만 제공하는 decoy (멀티 서버 탐색 데모용)
-├── web_chat.html            # 브라우저 채팅 화면 (정적 1파일)
-├── web_demo_server.py       # web_chat.html 서빙 + /chat·/chat/stream·/health 프록시(:8600)
-├── requirements.txt
-├── .env.example
-│
-├── agent/
-│   ├── deps.py              # SupervisorDeps 의존성 주입
-│   ├── model_factory.py     # 환경변수·기본값에 따른 fast/Writer/Validator 모델 생성
-│   ├── writer.py            # OpenAI·Ollama Writer의 공통 프롬프트·근거·피드백 구성
-│   ├── graph.py              # v2 LangGraph StateGraph (route/plan/gate/research/replan_check/analysis/write/validate/finalize)
-│   ├── supervisor_v1.py      # legacy 선형 파이프라인 (버전 토글 대상)
-│   ├── fake_llm.py           # LLM_BACKEND=fake — 결정론적 fast/quality 모델 (route/plan/analyze/chat/write)
-│   ├── ollama_llm.py         # LLM_BACKEND=ollama — 로컬 실모델 백엔드
-│   ├── openai_llm.py         # LLM_BACKEND=openai — 실제 OpenAI API 백엔드
-│   ├── mcp_client.py          # MCP 멀티 서버(ops+docs) stdio 클라이언트 — 서버 탐색 + 명시적으로 켤 수 있는 재시도 데모
-│   ├── retry.py              # Transient 전용 backoff 재시도
-│   └── session_store.py       # SQLite 세션 저장소
-│
-├── data/
-│   ├── monitoring.json        # MCP Tool이 조회하는 모니터링 데이터
-│   └── runbooks/               # MCP Resource가 조회하는 대응 매뉴얼 6종
-│       ├── db-down.md
-│       ├── cpu-spike.md
-│       ├── disk-full.md
-│       ├── high-latency.md
-│       ├── memory-leak.md
-│       └── network-timeout.md
-│
-├── sh/                        # 실행 스크립트 모음 (학생 배포용 — 내부 회귀 테스트 스크립트는 제외)
-│   ├── setup_venv.sh            # .venv 생성 + requirements.txt 설치 (맨 처음 1회)
-│   ├── setup_ollama.sh          # 로컬 Ollama 모델 준비 — 있으면 재사용, 없으면 pull (리셋은 OLLAMA_FORCE_REFRESH=1)
-│   ├── run_agent_ollma.sh       # 에이전트만 기동 — 로컬 실모델
-│   ├── run_agent_openai.sh      # 에이전트만 기동 — OpenAI API (과금)
-│   ├── run_frontend.sh          # 브라우저 채팅 화면(web_demo_server.py) 기동
-│   └── make_student_zip.sh      # .env 제외 + .env.example 포함한 학생 배포용 zip 생성
-│
-├── doc/                       # 문서
-│   ├── README.md                # 이 문서
-│   ├── manual_ollma.md          # 사용자 가이드 — 로컬 실모델 기준
-│   ├── manual_openai.md         # 사용자 가이드 — OpenAI API 기준
-│   ├── regression_test_queries.md  # 시스템명 하드코딩 수정 검증용 회귀 테스트 쿼리 목록
-│   ├── image_usecase/           # manual_ollma.md 캡처 이미지
-│   └── image_usecase_openai/    # manual_openai.md 캡처 이미지
-```
+
+**`agent/` 모듈**
+
+| 분류 | 파일 | 역할 |
+|---|---|---|
+| 조립 | `runtime.py` | 실행 환경 조립과 자원 정리 |
+| | `deps.py` | `SupervisorDeps` 의존성 주입 |
+| | `model_factory.py` | 환경 변수에 따른 fast · Writer · Validator 모델 생성 |
+| 그래프 | `graph.py` | v2 LangGraph 노드와 엣지 |
+| | `supervisor_v1.py` | legacy 선형 파이프라인 |
+| 단계별 로직 | `targets.py` | 대상 시스템 판별, 확인 응답 분류 |
+| | `evidence.py` | 조사 자료 수집 Interface와 MCP 구현 |
+| | `rag.py` | 런북 임베딩 검색과 시스템별 근거 선택 |
+| | `analysis_policy.py` | 명시적 비교 요청 판별 |
+| | `writer.py` | 답변 초안 프롬프트 · 근거 · 피드백 구성 |
+| | `validation.py` | 초안과 관측 · 런북 대조 |
+| 모델 백엔드 | `fake_llm.py` · `ollama_llm.py` · `openai_llm.py` | `LLM_BACKEND`별 구현 |
+| 인프라 | `mcp_client.py` | 다중 MCP 세션과 서버 탐색 |
+| | `mcp_errors.py` | 재시도 대상이 아닌 MCP 오류 |
+| | `retry.py` | 일시적 오류용 backoff 재시도 |
+| | `session_store.py` | SQLite 세션 저장소 |
+
+---
+
+## 6. 관련 문서
+
+| 주제 | 문서 |
+|---|---|
+| 대상 시스템 확인 규칙 | [target-system-confirmation.md](target-system-confirmation.md) |
+| 조사 자료 수집 구조 | [evidence-collection.md](evidence-collection.md) |
+| 런북 RAG 검색 · 선택 | [runbook-rag.md](runbook-rag.md) |
+| 답변 내용 검증 | [answer-validation.md](answer-validation.md) |
+| MCP 호출 안전성 | [mcp-call-safety.md](mcp-call-safety.md) |
+| 화면 캡처 포함 사용 가이드 | [manual_ollma.md](manual_ollma.md) (로컬) · [manual_openai.md](manual_openai.md) (OpenAI) |
+| 수동 회귀 테스트 질문 목록 | [regression_test_queries.md](regression_test_queries.md) |
+| 회귀 평가 · LangSmith 비교 | [evaluation/README.md](../evaluation/README.md) |
+| Before 재측정 절차 | [eval/REPOSITORY_USAGE.md](../eval/REPOSITORY_USAGE.md) |
+| 성능 비교용 baseline | [baseline/README.md](../baseline/README.md) |
+
+> 사용 가이드의 강제 재시도 · 병렬 지연 시연은 baseline 이전 원본 동작을 설명하는 자료입니다.
