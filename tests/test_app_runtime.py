@@ -41,7 +41,7 @@ def fake_llms():
     return "fake", FastLLM("test-fast", 0.00015), QualityLLM("test-quality", 0.005)
 
 
-def make_test_app(version="v2"):
+def make_test_app(version="v2", store=None):
     import server
     from agent.deps import SupervisorDeps
     from agent.evidence import CollectionResult, Evidence
@@ -61,7 +61,7 @@ def make_test_app(version="v2"):
                 ) for task in tasks
             ], elapsed=0.25)
 
-    store = SqliteSessionStore(":memory:")
+    store = store if store is not None else SqliteSessionStore(":memory:")
     backend, fast, quality = fake_llms()
     deps = SupervisorDeps(
         fast_llm=fast, quality_llm=quality, mcp=StubMCP(),
@@ -261,6 +261,17 @@ def test_real_runtime_serves_chat_and_stream_and_closes_mcp(tmp_path, monkeypatc
         assert response["metadata"]["retry_count"] == 0
         assert client.get("/health").json()["instance_id"] == first_id
         assert client.get("/health").json()["creation_count"] == 1
+        confirmation = client.post("/chat", json={
+            "message": "CPU 급증 원인 진단", "thread_id": "confirm-real-mcp",
+        }).json()
+        assert not any(e["type"] == "TaskCompleted" for e in confirmation["events"])
+        resumed = decode_sse(client.get("/chat/stream", params={
+            "message": "payments-service", "thread_id": "confirm-real-mcp",
+        }))
+        assert [e["target"] for e in resumed
+                if e["type"] == "TaskCompleted" and e["source"] == "monitoring"] == ["payments-service"]
+        assert "CPU 91.0%" in resumed[-1]["reply"]
+        assert "CPU 급증 원인 진단" in resumed[-1]["reply"]
     assert mcp.sessions == {}
 
 

@@ -1,18 +1,17 @@
 """v2 Supervisor — 실제 langgraph.StateGraph (Wave 4·5·6·7·8·10b·15 통합).
 
-route → (chat 직행 | incident 파이프라인)
-incident: plan(MCP Prompt 절차 반영) → gate(권위 게이트) → research(가드+병렬+재시도)
+prepare_request(확인 재개) → route → (chat 직행 | incident 파이프라인)
+incident: resolve_targets(불명확하면 확인 요청으로 종료)
+          → plan(MCP Prompt 절차 반영) → gate(권위 게이트) → research(가드+병렬+재시도)
           → replan_check(RAG·필요한 분석 병렬 실행 및 합류) → write
           → validate(반려 시 재작성) → finalize
 검색기를 주입하지 않은 기존 비교 경로는 재조사 → analysis 순서를 유지한다.
 
-모든 노드는 SupervisorDeps를 functools.partial로 주입받는 순수 함수다(Wave 13).
+모든 노드는 SupervisorDeps를 functools.partial로 주입받는다(Wave 13).
 각 노드는 @traceable로 LangSmith에 계층 트리로 기록된다.
 """
 import asyncio
-import json
 from functools import partial
-from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.config import get_stream_writer
@@ -22,30 +21,8 @@ from langsmith import traceable
 from .deps import SupervisorDeps
 from .evidence import ResearchTask
 from .analysis_policy import comparison_requested
-
-
-def _load_known_systems() -> set[str]:
-    """ollama_llm.py/openai_llm.py와 동일한 소스(data/monitoring.json)에서
-    시스템 목록을 읽는다 — plan_node가 MCP Prompt에 넘길 system_name을
-    쿼리에서 멤버십 매칭으로 뽑아낼 때 쓴다."""
-    path = Path(__file__).resolve().parent.parent / "data" / "monitoring.json"
-    try:
-        return set(json.loads(path.read_text()).keys())
-    except (OSError, json.JSONDecodeError):
-        return {"auth-service", "web-01"}
-
-
-KNOWN_SYSTEMS = _load_known_systems()
-
-
-def _extract_system_name(query: str) -> str:
-    """정규식 대신 실제 KNOWN_SYSTEMS 멤버십 매칭 — MCP Prompt(incident_analysis_
-    prompt)의 system_name은 "시스템: X" 한 줄짜리 컨텍스트라 항상 정해진 이름
-    중 하나로만 고정한다(여러 개 언급돼도 join하지 않음 — 실제 조사 대상 목록은
-    이후 plan()의 tasks가 별도로 결정). 쿼리에서 가장 먼저 등장하는 시스템을
-    고르고, 하나도 안 걸리면 가장 흔한 사례인 auth-service로 폴백."""
-    matches = [(query.index(s), s) for s in KNOWN_SYSTEMS if s in query]
-    return min(matches)[1] if matches else "auth-service"
+from .targets import (KNOWN_SYSTEMS, classify_followup, is_runbook_request,
+                      load_runbook_titles, normalize_plan, resolve_targets)
 
 
 class AgentState(TypedDict, total=False):
@@ -68,20 +45,86 @@ class AgentState(TypedDict, total=False):
     cost_usd: float
     events: list[dict]
     retrieval: dict
+    resolved_targets: list[str]
+    resumed_target: bool
+    pending_request_id: str
+    runbook_only: bool
 
 
 def _cost(state: AgentState, usage: dict) -> float:
     return round(state.get("cost_usd", 0.0) + usage["usd"], 6)
 
 
+def _confirmation(state: AgentState, query: str) -> dict:
+    """조사 대신 선택지를 반환한다. 추천 시스템도 사용자가 선택하기 전에는 조회하지 않는다."""
+    resolved = resolve_targets(query)
+    event = {"type": "TargetConfirmationRequired", "reason": resolved.reason,
+             "choices": sorted(KNOWN_SYSTEMS), "suggestions": list(resolved.suggestions)}
+    hint = (f" 혹시 {', '.join(resolved.suggestions)}를 말씀하셨나요?"
+            if resolved.suggestions else "")
+    reply = ("진단할 대상 시스템을 확인해 주세요." + hint
+             + "\n선택 가능: " + ", ".join(sorted(KNOWN_SYSTEMS))
+             + "\n시스템 이름을 선택하거나 여러 이름을 함께 입력해 주세요. 취소도 가능합니다.")
+    return {"final": reply, "events": state.get("events", []) + [event]}
+
+
+@traceable(name="prepare_request_node")
+async def prepare_request_node(state: AgentState, deps: SupervisorDeps) -> dict:
+    """확인 대기의 선택·취소·새 질문을 구분한다. 선택은 원래 증상을 보존해 재개한다."""
+    thread = state.get("thread_id")
+    store = getattr(deps, "session_store", None)
+    if thread is None or store is None:
+        return {}
+    pending = store.pending_target(thread)
+    if pending is None:
+        return {}
+    decision = classify_followup(state["query"])
+    if decision.kind == "cancel":
+        store.clear_pending_target(thread, expected_request_id=pending.request_id)
+        return {"final": "대상 시스템 확인을 취소했습니다. 새 질문을 입력해 주세요.",
+                "events": state.get("events", []) + [{"type": "TargetConfirmationCancelled"}]}
+    if decision.kind == "select":
+        # 원문에 오타·배제 표현이 남아 있어도 이번에 확정한 목록을 실행 기준으로 삼는다.
+        return {"query": pending.query + "\n확정된 조사 대상: " + ", ".join(decision.targets),
+                "resolved_targets": list(decision.targets), "resumed_target": True,
+                "pending_request_id": pending.request_id}
+    if decision.kind == "clarify":
+        return _confirmation(state, pending.query)
+    store.clear_pending_target(thread, expected_request_id=pending.request_id)
+    return {}
+
+
 @traceable(name="route_node")
-async def route_node(state: AgentState, deps: SupervisorDeps) -> dict:
+async def route_node(state: AgentState, deps: SupervisorDeps, *, runbook_titles: tuple[str, ...]) -> dict:
     """Wave 5 — 모든 쿼리가 무거운 파이프라인을 탈 필요는 없다."""
-    result, usage = deps.fast_llm.route(state["query"])
+    runbook_only = is_runbook_request(state["query"], runbook_titles)
+    if state.get("resumed_target") or runbook_only:
+        # 시스템 이름만 고른 후속 응답을 일반 대화로 오분류하지 않는다.
+        result, usage = {"route": "incident", "needs_analysis": False}, {"usd": 0}
+    else:
+        result, usage = deps.fast_llm.route(state["query"])
     event = {"type": "RouteDecided", "route": result["route"]}
     return {"route": result["route"], "needs_analysis": result["needs_analysis"],
+            "runbook_only": runbook_only,
             "cost_usd": _cost(state, usage),
             "events": state.get("events", []) + [event]}
+
+
+@traceable(name="resolve_targets_node")
+async def resolve_targets_node(state: AgentState, deps: SupervisorDeps) -> dict:
+    """진단 경로에서 대상이 불확실하면 MCP·RAG·작성 모델 실행 전에 멈춘다."""
+    if state.get("runbook_only"):
+        if getattr(deps, "runbook_retriever", None) is None:
+            return {"final": "런북 검색 기능이 활성화되어 있지 않습니다. 검색 설정을 확인해 주세요."}
+        return {"resolved_targets": []}
+    if state.get("resumed_target"):
+        return {}
+    resolved = resolve_targets(state["query"])
+    if resolved.reason is None:
+        return {"resolved_targets": list(resolved.targets)}
+    if state.get("thread_id") is not None and getattr(deps, "session_store", None) is not None:
+        deps.session_store.set_pending_target(state["thread_id"], state["query"])
+    return _confirmation(state, state["query"])
 
 
 @traceable(name="chat_answer_node")
@@ -106,15 +149,19 @@ async def plan_node(state: AgentState, deps: SupervisorDeps) -> dict:
 
     resource와 마찬가지로 이름을 어느 서버가 들고 있는지 미리 가정하지 않고,
     find_prompt()로 연결된 서버들을 먼저 조회해 찾은 뒤에만 get_prompt를 보낸다."""
+    targets = state["resolved_targets"]
+    if state.get("runbook_only"):
+        return {"tasks": [], "needs_analysis": False,
+                "events": state["events"] + [{"type": "PlanCreated", "task_count": 0, "targets": []}]}
     prompt_server = await deps.mcp.find_prompt("incident_analysis_prompt")
     procedure = await deps.mcp.get_prompt(
         "incident_analysis_prompt",
-        {"system_name": _extract_system_name(state["query"]), "symptom": state["query"]},
+        {"system_name": targets[0], "symptom": state["query"]},
         server=prompt_server,
     )
     result, usage = deps.fast_llm.plan(state["query"], procedure)
-    targets = [t["target"] for t in result["tasks"]
-               if t["agent"] == "research" and t.get("target")]
+    # 백엔드의 정규화와 별개로 실행 경계에서도 사용자 확정 목록을 강제한다.
+    result = normalize_plan(result, targets)
     event = {"type": "PlanCreated", "task_count": len(result["tasks"]),
              "targets": targets}
     return {"tasks": result["tasks"], "needs_analysis": result["needs_analysis"],
@@ -334,12 +381,15 @@ async def validate_node(state: AgentState, deps: SupervisorDeps) -> dict:
 
 @traceable(name="finalize_node")
 async def finalize_node(state: AgentState, deps: SupervisorDeps) -> dict:
+    if state.get("resumed_target") and state.get("thread_id") is not None:
+        deps.session_store.clear_pending_target(
+            state["thread_id"], expected_request_id=state["pending_request_id"])
     return {"final": state["draft"],
             "events": state["events"] + [{"type": "Finalize", "pipeline": "incident-v2"}]}
 
 
 def _after_route(state: AgentState) -> str:
-    return "chat_answer" if state["route"] == "chat" else "plan"
+    return "chat_answer" if state["route"] == "chat" else "resolve_targets"
 
 
 def _after_replan_check(state: AgentState) -> str:
@@ -356,7 +406,10 @@ def _after_validate(state: AgentState) -> str:
 def build_graph(deps: SupervisorDeps):
     g = StateGraph(AgentState)
     node = lambda fn: partial(fn, deps=deps)   # Wave 13 — 명시적 의존성 주입
-    g.add_node("route", node(route_node))
+    g.add_node("prepare_request", node(prepare_request_node))
+    g.add_node("resolve_targets", node(resolve_targets_node))
+    g.add_node("route", partial(route_node, deps=deps,
+                               runbook_titles=load_runbook_titles(getattr(deps, "runbook_retriever", None))))
     g.add_node("chat_answer", node(chat_answer_node))
     g.add_node("plan", node(plan_node))
     g.add_node("gate", node(gate_node))
@@ -367,9 +420,15 @@ def build_graph(deps: SupervisorDeps):
     g.add_node("validate", node(validate_node))
     g.add_node("finalize", node(finalize_node))
 
-    g.set_entry_point("route")
+    g.set_entry_point("prepare_request")
+    g.add_conditional_edges("prepare_request",
+                            lambda s: END if s.get("final") else "route",
+                            {END: END, "route": "route"})
     g.add_conditional_edges("route", _after_route,
-                            {"chat_answer": "chat_answer", "plan": "plan"})
+                            {"chat_answer": "chat_answer", "resolve_targets": "resolve_targets"})
+    g.add_conditional_edges("resolve_targets",
+                            lambda s: END if s.get("final") else "plan",
+                            {END: END, "plan": "plan"})
     g.add_edge("chat_answer", END)
     g.add_edge("plan", "gate")
     g.add_edge("gate", "research")

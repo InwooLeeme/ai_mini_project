@@ -75,6 +75,8 @@
     color: white; font-size: 14px; cursor: pointer;
   }
   button:disabled { background: #3a3a52; cursor: default; }
+  .target-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .target-choices button { padding: 7px 10px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -91,7 +93,13 @@
       </div>
 
       <div v-else-if="item.kind === 'agent'" class="row agent">
-        <div class="bubble">{{ item.text }}</div>
+        <div class="bubble">{{ item.text }}
+          <div v-if="item.choices?.length" class="target-choices" aria-label="진단 대상 시스템 선택">
+            <button v-for="target in item.choices" :key="target" type="button"
+                    :disabled="sending" @click="chooseTarget(target)">{{ target }}</button>
+            <button type="button" :disabled="sending" @click="chooseTarget('취소')">취소</button>
+          </div>
+        </div>
       </div>
 
       <details v-else-if="item.kind === 'prompt'" class="prompt-box">
@@ -115,6 +123,8 @@
 const { createApp, ref, reactive, nextTick } = Vue;
 
 const STEP_LABELS = {
+  TargetConfirmationRequired: () => '대상 시스템 확인 필요 · 선택 후 원래 질문으로 진단을 이어갑니다',
+  TargetConfirmationCancelled: () => '대상 시스템 확인 취소',
   PlanCreated: e => `계획 수립: 할 일 ${e.task_count}가지${e.targets?.length ? ` (시스템: ${e.targets.join(', ')})` : ''}`,
   GateApplied: e => e.removed_analysis_tasks ? `불필요한 작업 ${e.removed_analysis_tasks}건 제거` : null,
   TaskCompleted: e => (e.source === 'monitoring'
@@ -150,8 +160,10 @@ createApp({
 
     function onSubmit() {
       const text = input.value.trim();
-      if (!text) return;
+      if (!text || sending.value) return;
 
+      // 이전 확인 버튼으로 새 질문의 대상을 실수로 바꾸지 않도록 만료시킨다.
+      for (const item of log.value) if (item.choices) item.choices = [];
       log.value.push({ id: nextId++, kind: 'user', text });
       input.value = '';
       sending.value = true;
@@ -165,12 +177,16 @@ createApp({
       const es = new EventSource(url);
       let streamItem = null;
       let streamAttempt = null;   // write_node 재작성(attempt 증가) 시 새 말풍선으로 끊는다
+      let choices = [];
 
       es.onmessage = (event) => {
         if (event.data === '[DONE]') { es.close(); sending.value = false; return; }
         let e;
         try { e = JSON.parse(event.data); } catch { return; }
 
+        if (e.type === 'TargetConfirmationRequired') {
+          choices = [...new Set([...(e.suggestions || []), ...e.choices])];
+        }
         if (e.type === 'AnswerToken') {
           if (!streamItem || streamAttempt !== e.attempt) {
             streamItem = reactive({ id: nextId++, kind: 'agent', text: '' });
@@ -188,6 +204,7 @@ createApp({
             log.value.push(streamItem);
           }
           streamItem.text = e.reply;   // 토큰 합산 결과와 서버의 최종 텍스트를 일치시킨다
+          streamItem.choices = choices;
           if (e.prompt) log.value.push({ id: nextId++, kind: 'prompt', text: e.prompt });
           streamItem = null;
           streamAttempt = null;
@@ -206,7 +223,12 @@ createApp({
       es.onerror = () => { es.close(); sending.value = false; };
     }
 
-    return { backendLabel, log, input, sending, logEl, onSubmit };
+    function chooseTarget(target) {
+      input.value = target;
+      onSubmit();
+    }
+
+    return { backendLabel, log, input, sending, logEl, onSubmit, chooseTarget };
   },
 }).mount('#app');
 </script>

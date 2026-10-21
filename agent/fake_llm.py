@@ -8,6 +8,8 @@ import re
 
 from langsmith import traceable
 
+from .targets import normalize_plan, resolve_targets
+
 
 class FakeLLM:
     def __init__(self, name: str, usd_per_1k_tokens: float):
@@ -37,17 +39,9 @@ class FastLLM(FakeLLM):
         Wave 6 재현: needs_analysis=False라고 스스로 판단해 놓고도 analysis task를
         끼워 넣는 '모델의 자기모순'을 결정론적으로 재현한다 → gate 노드가 걸러낸다.
         """
-        systems = re.findall(r"[a-z][a-z0-9-]+-(?:service|\d+)", query) or ["auth-service"]
-        if "web-01" not in systems:
-            systems.append("web-01")   # 연관 시스템 비교 조회 → Wave 10b 병렬 실행 대상
-        tasks = [
-            {"id": f"task-{i}", "agent": "research", "kind": "monitoring",
-             "target": s, "status": "pending"}
-            for i, s in enumerate(dict.fromkeys(systems))
-        ]
-        tasks.append({"id": "task-analysis", "agent": "analysis",
-                      "kind": "pattern-analysis", "status": "pending"})   # 자기모순 task
-        result = {"needs_analysis": False, "tasks": tasks}
+        result = normalize_plan({"needs_analysis": False, "tasks": [
+            {"agent": "analysis"},  # 자기모순 분석 계획은 기존 gate 검증용으로 유지한다.
+        ]}, resolve_targets(query).targets)
         return result, self._usage(query + procedure_prompt, str(result))
 
     @traceable(run_type="llm", name="fast_llm.analyze")

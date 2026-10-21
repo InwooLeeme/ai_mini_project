@@ -145,6 +145,9 @@ async def chat_stream(request: Request, message: str, thread_id: str = "default"
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     continue
                 for node_name, delta in payload.items():
+                    # 확인 대기가 없는 준비 노드는 상태를 바꾸지 않아 None 업데이트가 온다.
+                    if not delta:
+                        continue
                     for ev in (delta.get("events") or [])[seen:]:
                         ev = {**ev, "node": node_name}
                         yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
