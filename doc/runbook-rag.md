@@ -217,7 +217,13 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m eval.compare_rag_inputs \
 최종 순서는 시스템별 검색 점수의 최댓값 내림차순과 문서 ID 오름차순으로 고정한다.
 단일 입력의 유사도와 달리 복수 입력에서는 가장 관련 있는 시스템의 유사도를 표시한다.
 
-선택 모델에는 원래 질문·전체 관측·합친 후보의 원문을 전달하고 한 번만 호출한다.
+선택 모델은 검색 그룹마다 원래 질문·해당 그룹의 관측·해당 그룹의 후보 원문으로 호출한다.
+전체 관측을 한 번에 판정하면 질문이 언급한 장애에 끌려 다른 시스템의 관측 장애 문서를
+버렸다. 예를 들어 C02 "gateway→payments 타임아웃"에서 payments의 CPU 91% 알림이 있어도
+gpt-4o-mini는 10회 모두 `network-timeout`만 골랐다. 그룹 중 하나라도 근거가 있으면
+채택하고 채택 문서는 합친다. 모두 미채택이면 첫 그룹의 사유로 미조회를 반환한다.
+그룹이 하나면 기존과 같이 한 번 호출한다. 호출 수는 `usage.selector_call_count`,
+토큰은 그룹 합계로 기록하며 일부 미측정이면 합계를 추정하지 않는다.
 후보 밖 문서 ID 거부, 명시적 미조회, 원문과 출처 보존은 유지한다.
 배치 임베딩의 개수·차원·유효성을 모두 검증하므로 일부 실패를 부분 성공으로 숨기지 않는다.
 `usage.retrieval_query_count`와 `usage.candidate_count`로 실제 검색 입력 수와 후보 수를
@@ -225,7 +231,8 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m eval.compare_rag_inputs \
 색인 메타데이터의 `top_k_documents_per_system`은 그룹별 후보 제한을 뜻하며,
 전체 후보 수로 오해할 수 있던 `top_k_documents`를 대체한다.
 `usage.retrieval_groups`에는 각 그룹의 `system_name`, `observation_count`,
-상위 후보의 `document_id`·`rank`·`score`를 기록한다. 이를 통해 어떤 시스템의
+상위 후보의 `document_id`·`rank`·`score`와 그룹별 채택 문서
+`selected_document_ids`를 기록한다. 이를 통해 어떤 시스템의
 몇 위 후보로 문서가 포함됐는지 확인할 수 있다. 전체 점수표나 관측 원문을
 추적 정보에 중복 저장하지 않고, 선택 모델의 프롬프트에도 이 정보를 넣지 않는다.
 관측이 전혀 없을 때는 이름이 `null`이고 관측 수가 0인 질문 검색 그룹이 기록된다.

@@ -80,7 +80,7 @@ def test_semantic_or_compound_queries_still_call_selector_even_with_perfect_scor
 def test_multiple_system_observations_retain_model_judgment():
     observations = OBSERVATIONS + [{"system_name": "db-service", "alerts": ["DB down"]}]
     _, selector = asyncio.run(search("api-service CPU 급증 대응 절차를 찾아줘.", observations))
-    assert len(selector.calls) == 1
+    assert [call[1] for call in selector.calls] == [[o] for o in observations]
 
 
 @pytest.mark.parametrize("alerts", [

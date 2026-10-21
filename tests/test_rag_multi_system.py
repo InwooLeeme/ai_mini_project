@@ -53,9 +53,11 @@ def test_multi_system_union_preserves_each_top_three_and_full_source():
         assert result.documents == [DOCUMENTS[0], DOCUMENTS[3]]
         assert result.usage["retrieval_query_count"] == 2
         assert result.usage["candidate_count"] == 4
-        assert len(selector.calls) == 1
-        assert selector.calls[0][:2] == ("두 시스템의 장애", OBSERVATIONS)
-        assert selector.calls[0][2] == [DOCUMENTS[i] for i in [0, 3, 1, 2]]
+        # 시스템마다 자기 관측과 자기 후보만으로 따로 판정한다.
+        assert selector.calls == [
+            ("두 시스템의 장애", [OBSERVATIONS[0]], [DOCUMENTS[i] for i in [0, 1, 2]]),
+            ("두 시스템의 장애", [OBSERVATIONS[1]], [DOCUMENTS[i] for i in [3, 2, 1]]),
+        ]
         assert len(embeddings.inputs) == 1
         assert [json.loads(t.split("\n관측: ", 1)[1]) for t in embeddings.inputs[0]] == [
             [OBSERVATIONS[0]], [OBSERVATIONS[1]]]
@@ -100,7 +102,7 @@ def test_unknown_system_observation_preserves_known_candidates(name, known):
         assert "d" in [d.document_id for d in result.documents]
         assert len(embeddings.inputs[0]) == len(known) + 1
         assert json.loads(embeddings.inputs[0][-1].split("\n관측: ", 1)[1]) == [unknown]
-        assert selector.calls[0][1] == observations
+        assert [call[1] for call in selector.calls] == [[o] for o in observations]
         assert result.usage["retrieval_groups"][-1]["system_name"] is None
     asyncio.run(exercise())
 
@@ -118,7 +120,7 @@ def test_only_unnamed_observations_keep_one_group_without_loss():
     asyncio.run(exercise())
 
 
-def test_retrieval_trace_explains_candidate_admission_without_changing_selector_input():
+def test_retrieval_trace_explains_candidate_admission_and_per_system_selection():
     async def exercise():
         selector = Selector()
         retriever = await RunbookRetriever.create(DOCUMENTS, Embeddings(), selector)
@@ -138,7 +140,75 @@ def test_retrieval_trace_explains_candidate_admission_without_changing_selector_
             {"document_id": "c", "rank": 2, "score": .8},
             {"document_id": "b", "rank": 3, "score": .6},
         ]
-        assert selector.calls == [("질문", OBSERVATIONS, [DOCUMENTS[i] for i in [0, 3, 1, 2]])]
+        assert [g["selected_document_ids"] for g in groups] == [["a"], ["d"]]
+    asyncio.run(exercise())
+
+
+class FocusSelector:
+    """질문 주제에 끌려 첫 후보만 고르는 모델처럼 동작한다 (2026-10-21 C02 재현)."""
+    def __init__(self, usages=None):
+        self.usages = list(usages or [])
+
+    async def select(self, query, observations, documents):
+        usage = self.usages.pop(0) if self.usages else {}
+        return ({"answerable": True, "document_ids": [documents[0].document_id],
+                 "reason": "근거 확인"}, usage)
+
+
+def test_one_system_focus_does_not_drop_another_systems_document():
+    async def exercise():
+        retriever = await RunbookRetriever.create(DOCUMENTS, Embeddings(), FocusSelector())
+        result = await retriever.search("gateway 타임아웃", OBSERVATIONS)
+        assert result.documents == [DOCUMENTS[0], DOCUMENTS[3]]
+    asyncio.run(exercise())
+
+
+def test_per_system_selector_usage_is_summed_without_inventing_missing_counts():
+    async def exercise():
+        usages = [{"selector_model": "m", "selector_input_tokens": 100, "selector_output_tokens": 20,
+                   "selector_reason_code": "supported"},
+                  {"selector_model": "m", "selector_input_tokens": 120, "selector_output_tokens": None,
+                   "selector_reason_code": "supported"}]
+        retriever = await RunbookRetriever.create(DOCUMENTS, Embeddings(), FocusSelector(usages))
+        result = await retriever.search("질문", OBSERVATIONS)
+        assert result.usage["selector_model"] == "m"
+        assert result.usage["selector_input_tokens"] == 220
+        assert result.usage["selector_output_tokens"] is None
+        assert result.usage["selector_reason_code"] == "supported"
+        assert result.usage["selector_call_count"] == 2
+    asyncio.run(exercise())
+
+
+def test_supported_system_is_kept_when_another_system_is_normal():
+    class PartialSelector:
+        async def select(self, query, observations, documents):
+            if observations[0]["system_name"] == "log":
+                return {"answerable": False, "document_ids": [],
+                        "reason": "관측 정상"}, {"selector_reason_code": "normal_observations"}
+            return {"answerable": True, "document_ids": ["a"],
+                    "reason": "근거 확인"}, {"selector_reason_code": "supported"}
+
+    async def exercise():
+        retriever = await RunbookRetriever.create(DOCUMENTS, Embeddings(), PartialSelector())
+        result = await retriever.search("질문", OBSERVATIONS[::-1])
+        assert result.documents == [DOCUMENTS[0]]
+        assert result.reason == "근거 확인"
+        assert result.usage["selector_reason_code"] == "supported"
+    asyncio.run(exercise())
+
+
+def test_no_supported_system_returns_empty_with_first_reason():
+    class RejectSelector:
+        async def select(self, query, observations, documents):
+            return {"answerable": False, "document_ids": [],
+                    "reason": observations[0]["system_name"]}, {"selector_reason_code": "normal_observations"}
+
+    async def exercise():
+        retriever = await RunbookRetriever.create(DOCUMENTS, Embeddings(), RejectSelector())
+        result = await retriever.search("질문", OBSERVATIONS)
+        assert result.documents == []
+        assert result.reason == "gateway"
+        assert result.usage["selector_reason_code"] == "normal_observations"
     asyncio.run(exercise())
 
 

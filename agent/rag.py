@@ -1,4 +1,5 @@
 """MCP 런북을 절차 단위로 색인하고 로컬 모델로 관련 근거를 선택한다."""
+import asyncio
 import hashlib
 import json
 import math
@@ -197,6 +198,36 @@ def parse_selection(content, usage):
     return selection, usage
 
 
+def merge_selections(results):
+    """시스템별 판정을 합친다. 하나라도 근거가 있으면 해당 문서들을 채택한다."""
+    if len(results) == 1:
+        return results[0]
+    for selection, _ in results:
+        if not isinstance(selection, dict) or not isinstance(selection.get("answerable"), bool):
+            raise ValueError("근거 선택 결과에 명시적인 판단이 없습니다")
+        if selection["answerable"] and not isinstance(selection.get("document_ids"), list):
+            raise ValueError("근거 선택 결과가 후보 계약을 위반했습니다")
+    supported = [r for r in results if r[0]["answerable"]]
+    representative = (supported or results)[0]
+    ids = []
+    for selection, _ in supported:
+        ids += [i for i in selection["document_ids"] if i not in ids]
+    usage = {}
+    for key in dict.fromkeys(k for _, u in results for k in u):
+        values = [u.get(key) for _, u in results]
+        numeric = [type(v) in (int, float) for v in values]
+        if all(numeric):
+            usage[key] = sum(values)
+        elif any(numeric) and all(n or v is None for n, v in zip(numeric, values)):
+            usage[key] = None  # 일부 미측정이면 합계를 추정하지 않는다.
+        else:
+            usage[key] = values[0] if len(set(map(repr, values))) == 1 else values
+    if "selector_reason_code" in representative[1]:
+        usage["selector_reason_code"] = representative[1]["selector_reason_code"]
+    return ({"answerable": bool(supported), "document_ids": ids,
+             "reason": representative[0].get("reason")}, usage)
+
+
 class OpenAIModels:
     """임베딩과 근거 선택을 OpenAI API로 수행한다. 실제 과금이 발생한다."""
     def __init__(self):
@@ -349,7 +380,7 @@ class RunbookRetriever:
         vectors = [normalize(vector) for vector in vectors]
         if any(len(vector) != len(self.vectors[0]) for vector in vectors):
             raise ValueError("질의 임베딩 차원 불일치")
-        scores, candidate_ids, retrieval_groups = {}, set(), []
+        scores, candidate_ids, retrieval_groups, group_candidates = {}, set(), [], []
         for (name, group), vector in zip(search_groups, vectors):
             system_scores = {}
             for chunk, embedding in zip(self.chunks, self.vectors):
@@ -358,6 +389,7 @@ class RunbookRetriever:
             system_ranked = sorted(
                 system_scores, key=lambda doc_id: (-system_scores[doc_id], doc_id))[:3]
             candidate_ids.update(system_ranked)
+            group_candidates.append(system_ranked)
             # 후보 편입 근거는 추적 정보에만 남기고 선택 모델의 입력에는 추가하지 않는다.
             retrieval_groups.append({
                 "system_name": name, "observation_count": len(group),
@@ -382,9 +414,18 @@ class RunbookRetriever:
                      "selector_input_tokens": 0, "selector_output_tokens": 0,
                      "selector_reason_code": "supported"}
         else:
-            selection, usage = await self.selector.select(
-                query, observations, [self.documents[doc_id] for doc_id in ranked])
-            usage = {**usage, "selection_method": "model", "selector_called": True}
+            # 여러 시스템을 한 번에 판정하면 질문이 언급한 장애에 끌려 다른 시스템의
+            # 관측 장애 문서를 버린다(C02). 시스템마다 자기 관측과 후보로만 판정한다.
+            results = await asyncio.gather(*(
+                self.selector.select(query, group, [self.documents[i] for i in group_ids])
+                for (_, group), group_ids in zip(search_groups, group_candidates)))
+            for summary, (group_selection, _) in zip(retrieval_groups, results):
+                summary["selected_document_ids"] = (
+                    group_selection.get("document_ids")
+                    if group_selection.get("answerable") is True else [])
+            selection, usage = merge_selections(results)
+            usage = {**usage, "selection_method": "model", "selector_called": True,
+                     "selector_call_count": len(results)}
         selected_at = time.perf_counter()
         if not isinstance(selection, dict) or not isinstance(selection.get("answerable"), bool):
             raise ValueError("근거 선택 결과에 명시적인 판단이 없습니다")
