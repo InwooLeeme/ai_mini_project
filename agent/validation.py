@@ -47,11 +47,28 @@ Criteria (include all six exactly once):
   Example PASS: 'CPU가 90%를 넘고 지속되는 경우 인스턴스를 추가할 수 있습니다.'
   Example PASS: '지속 여부는 미확인입니다. 지속되는지 확인 후 증설을 검토하세요.'
   Example FAIL: '메모리 89%이므로 즉시 재시작하세요' when the rule requires >=90%.
-- temporal: FAIL only for an asserted duration/trend/simultaneity without evidence.
-  Conditional clauses and admissions of unknown duration are PASS. An alert-attributed
-  trend is allowed only for that alert's system/metric. A single CPU snapshot does not
-  prove sustained CPU load, even if a memory alert says memory rose for 6 hours.
-  '지속되고 있으므로 증설하세요' without CPU duration evidence is FAIL.
+- temporal: Distinguish unsupported time claims from missing alert attribution.
+  Apply the following cases only to asserted durations, trends, or simultaneity.
+  A draft with no such assertion does not fail temporal merely because evidence is absent.
+  Inspect the monitoring evidence's alerts, including English text, before judging.
+  Match the SAME system, metric, and period; an alert for memory is not CPU evidence,
+  and an alert for one system is not evidence for another system.
+  (1) No matching temporal evidence: FAIL; begin reason with UNSUPPORTED_TEMPORAL:.
+      Correct the unsupported assertion to an unknown or a request for measurements.
+  (2) A matching alert supports the trend but the draft states it without attributing
+      it to monitoring/an alert: FAIL; begin reason with ALERT_ATTRIBUTION:.
+      Explain that the evidence EXISTS and only attribution needs correction.
+      Cite its evidence_id and give a replacement sentence that names the system,
+      monitoring alert, metric, and reported period. Preserve the supported information;
+      do NOT say there is no evidence or replace it with only 'check whether it increases'.
+  (3) The draft accurately attributes a matching trend to an alert: PASS, even without
+      raw timeseries. Do not demand independent timeseries to report what the alert says.
+  Example: cache-service alerts ['memory usage climbing steadily over 6h', 'heap near limit']
+  support 'cache-service의 모니터링 알림에 따르면 최근 6시간 동안 메모리가 증가했고 힙 한계에 근접했습니다.'
+  They do not prove CPU duration, another system's memory trend, a shared cause, or that
+  memory is >=90%. Recommending immediate restart at 89% still fails conditions.
+  Conditional clauses and honest admissions of missing independent verification are PASS.
+  Unsupported simultaneity and '지속되고 있으므로 증설하세요' without CPU evidence are FAIL.
 - grounding: Facts, hypotheses and unknowns must be distinguishable. Fail unsupported
   claims of having queried logs/deployments/timeseries or executed remediation. Reports
   of monitored alerts are NOT claims that logs were directly queried. Action suggestions
@@ -65,6 +82,9 @@ Criteria (include all six exactly once):
 Before returning fail, check the ENTIRE draft: it may already qualify the quoted statement
 or acknowledge missing evidence elsewhere. Do not propose a correction that merely repeats
 what the draft already says. Never tell the writer to add fabricated evidence or actions.
+For an attribution correction, preserve relevant supported alerts (including reported
+duration and risk signals) in the replacement. Do not improve apparent certainty by
+deleting evidence. Reporting an alert and independently verifying it are different claims.
 """
 
 

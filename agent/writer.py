@@ -1,0 +1,34 @@
+"""Writer의 공통 프롬프트를 구성한다. 전송·스트리밍은 공급자 어댑터가 담당한다."""
+
+
+def build_writer_prompt(query: str, collected: list[dict], feedback: str | None) -> tuple[str, str]:
+    """근거의 순서와 표현을 보존하고 입력을 변경하지 않는 순수 함수다."""
+    system = ("당신은 ICT 운영 보고 작성자다. 수집된 사실만 사용해 한국어로 "
+              "간결한 대응 보고를 작성하라. 반드시 '1) ... 2) ... 3) ...' 형식의 "
+              "번호 절차로 답하고, 수치는 수집된 값을 그대로 인용하라.")
+    facts = []
+    for c in collected:
+        if c["source"] == "monitoring":
+            d = c["data"]
+            facts.append(f"- 모니터링 {d['system_name']}: 상태={d['status']}, "
+                         f"CPU {d['cpu_percent']}%, 메모리 {d['memory_percent']}%, "
+                         f"조회 시각={d.get('last_checked', '미확인')}, 알림 {len(d['alerts'])}건 {d['alerts']}")
+        elif c["source"] == "runbook":
+            facts.append(f"- runbook 출처: {c.get('uri', '(기존 문서)')}\n{c['data'].strip()}")
+        elif c["source"] == "analysis":
+            facts.append(f"- 패턴 분석: {c['data'].strip()}")
+    system += (" 런북을 사용한 조치에는 제공된 출처 URI를 표시하라. "
+               "조치 실행 도구가 없으므로 재시작·증설·설정 변경을 실행했다고 쓰지 마라. "
+               "알림 임계값과 런북 조치 임계값은 다른 기준이므로 구분하라. "
+               "현재 관측·알림·가설·미확인을 구분하고, 단일 수치로 지속을 단정하지 마라. "
+               "지속 조건이 있는 조치에는 현재 지속 여부의 확인/미확인을 먼저 명시하라. "
+               "제보와 현재 관측이 다르면 발생 시각과 해당 구간 확인을 안내하라. "
+               "각 문서의 조건과 임계값을 보존하고, 여러 문서의 서로 다른 절차를 임의로 섞지 마라."
+               " 알림이 보고한 추세·기간·위험 신호는 해당 시스템의 '모니터링 알림에 따르면'으로 출처를 명시하라. "
+               "재작성 시에도 수정할 주장과 관련된 원문 알림의 시스템·지표·기간·위험 신호를 보존하라. "
+               "피드백이 근거가 없다고 하더라도 원문에 해당 알림이 있으면, 삭제하거나 단순히 확인이 필요하다고 바꾸지 말고 알림 출처를 밝혀 서술하라. "
+               "알림 보고와 직접 시계열을 검증한 사실은 구분하고, 다른 시스템·지표로 추세를 옮기거나 알림만으로 조치 조건 충족을 단정하지 마라.")
+    user = f"## 사용자 요청\n{query}\n\n## 수집된 사실\n" + "\n".join(facts)
+    if feedback:
+        user += f"\n\n## 이전 초안에 대한 검증 반려 사유 (반드시 반영)\n{feedback}"
+    return system, user

@@ -1,0 +1,122 @@
+{
+  "source_run_url": "https://smith.langchain.com/o/9f0d284e-01c6-47cf-ae36-a0184ef6efc0/projects/p/31ed6ada-5f86-4670-8055-cd0ce608abc7/r/01a15c1a-77b3-79f3-8f0f-05f5f4c27059?poll=true",
+  "query": "payments-service랑 cache-service 둘 다 저하됐는데 공통 원인이 있는지 분석해줘",
+  "targets": [
+    "payments-service",
+    "cache-service"
+  ],
+  "collected": [
+    {
+      "data": {
+        "alerts": [
+          "CPU 91% (threshold 80%)",
+          "payments-service-3 instance responding slow"
+        ],
+        "cpu_percent": 91.0,
+        "last_checked": "2026-10-21T10:36:31.571069",
+        "memory_percent": 55.0,
+        "status": "degraded",
+        "system_name": "payments-service"
+      },
+      "source": "monitoring"
+    },
+    {
+      "data": {
+        "alerts": [
+          "memory usage climbing steadily over 6h",
+          "heap near limit"
+        ],
+        "cpu_percent": 42.0,
+        "last_checked": "2026-10-21T10:36:31.528582",
+        "memory_percent": 89.0,
+        "status": "degraded",
+        "system_name": "cache-service"
+      },
+      "source": "monitoring"
+    },
+    {
+      "data": "# Runbook: 메모리 누수(Memory Leak) 대응 절차\n\n1. get_monitoring_status로 메모리 사용률 추세(시간에 따라 꾸준히 증가하는지)를 확인한다.\n2. OOM 직전(90% 이상)이면 해당 프로세스를 즉시 재시작해 서비스 중단을 막는다 — 재시작은 임시 조치일 뿐임을 기록해둔다.\n3. 힙 덤프 또는 프로파일링 도구로 어떤 객체가 계속 쌓이는지 확인한다.\n4. 캐시 무제한 증가, 커넥션 미반환, 이벤트 리스너 중복 등록 같은 패턴이 최근 배포에 있었는지 점검한다.\n5. 원인이 된 배포가 있으면 롤백하고, 컨테이너 메모리 상한선을 재확인해 재발 시 더 빨리 감지되도록 조정한다.\n",
+      "document_id": "memory-leak",
+      "source": "runbook",
+      "uri": "runbook://incident-response/memory-leak"
+    },
+    {
+      "data": "# Runbook: CPU 급증 대응 절차\n\n1. get_monitoring_status로 CPU 사용률과 최근 배포/트래픽 변화 시점을 확인한다.\n2. 반복 호출, 배치 작업 중복 실행 같은 특정 요청 패턴이 원인인지 최근 로그에서 확인한다.\n3. CPU가 90%를 넘고 지속되면 해당 인스턴스를 오토스케일링 그룹에서 한 대 더 띄워 부하를 분산한다.\n4. 급증이 특정 배포 직후 시작됐다면 직전 배포를 롤백하고 원인 분석은 별도로 진행한다.\n5. 정상화 후 프로파일링 결과를 바탕으로 핫스팟 코드를 식별해 최적화 작업을 등록한다.\n",
+      "document_id": "cpu-spike",
+      "source": "runbook",
+      "uri": "runbook://incident-response/cpu-spike"
+    },
+    {
+      "data": "제공된 모니터링 값에 따르면, `payments-service`는 CPU 사용률이 91%로 높은 상태이며, `cache-service`는 메모리 사용량이 지속적으로 증가하고 있습니다. 두 서비스 모두 'degraded' 상태로, 성능 저하가 발생하고 있습니다.\n\n가설: 두 서비스의 성능 저하가 공통 원인으로 인해 발생하고 있을 가능성이 있습니다. 예를 들어, 시스템의 전반적인 리소스 부족(예: CPU, 메모리)이나 특정 트래픽 패턴이 두 서비스에 동시에 영향을 미쳤을 수 있습니다.\n\n추가 근거: \n1. `payments-service`의 높은 CPU 사용률은 요청 처리량 증가나 비효율적인 코드로 인한 것일 수 있으며, 이는 `cache-service`의 메모리 사용량 증가와 관련이 있을 수 있습니다.\n2. 두 서비스가 동일한 인프라에서 실행되고 있다면, 리소스 경쟁이 발생할 수 있습니다.\n\n그러나 현재 제공된 정보만으로는 두 서비스 간의 직접적인 상관관계나 공통 원인을 확정할 수 없습니다. 추가적인 로그, 시계열 데이터, 의존성 정보가 필요합니다.",
+      "source": "analysis"
+    }
+  ],
+  "draft": "1) 현재 `payments-service`는 CPU 사용률이 91%로 높은 상태이며, `cache-service`는 메모리 사용량이 89%로 높고 지속적으로 증가하고 있습니다. 두 서비스 모두 'degraded' 상태로 성능 저하가 발생하고 있습니다.\n\n2) `payments-service`의 CPU 사용률이 91%로 알림 임계값(80%)을 초과했습니다. CPU 급증 대응 절차에 따라, CPU 사용률과 최근 배포/트래픽 변화 시점을 확인해야 합니다. (출처: runbook://incident-response/cpu-spike)\n\n3) `cache-service`는 메모리 사용량이 89%로, 메모리 누수 대응 절차에 따라 메모리 사용률 추세를 확인하고, OOM 직전 상태인지 점검해야 합니다. (출처: runbook://incident-response/memory-leak)\n\n4) 두 서비스의 성능 저하가 공통 원인으로 발생했을 가능성을 고려할 수 있으나, 현재 제공된 정보만으로는 직접적인 상관관계나 공통 원인을 확정할 수 없습니다. 추가적인 로그, 시계열 데이터, 의존성 정보가 필요합니다.\n\n5) `payments-service`와 `cache-service`가 동일한 인프라에서 실행되고 있다면, 리소스 경쟁이 발생할 수 있으므로 인프라 자원 사용 현황을 점검하는 것이 필요합니다.",
+  "recorded_review": {
+    "checks": [
+      {
+        "criterion": "numeric",
+        "status": "pass",
+        "quote": "현재 `payments-service`는 CPU 사용률이 91%로 높은 상태이며, `cache-service`는 메모리 사용량이 89%로 높고 지속적으로 증가하고 있습니다.",
+        "evidence_ids": [
+          0,
+          1
+        ],
+        "reason": "관찰된 값이 증거와 일치합니다.",
+        "correction": ""
+      },
+      {
+        "criterion": "conditions",
+        "status": "pass",
+        "quote": "`payments-service`의 CPU 사용률이 91%로 알림 임계값(80%)을 초과했습니다. CPU 급증 대응 절차에 따라, CPU 사용률과 최근 배포/트래픽 변화 시점을 확인해야 합니다.",
+        "evidence_ids": [
+          0,
+          3
+        ],
+        "reason": "조건이 변경되지 않았으며, 현재 조건에 따라 조치를 권장하지 않았습니다.",
+        "correction": ""
+      },
+      {
+        "criterion": "temporal",
+        "status": "fail",
+        "quote": "`cache-service`는 메모리 사용량이 89%로 높고 지속적으로 증가하고 있습니다.",
+        "evidence_ids": [
+          1
+        ],
+        "reason": "지속적으로 증가하고 있다는 주장은 증거에 의해 뒷받침되지 않습니다.",
+        "correction": "`cache-service`의 메모리 사용량이 89%로 높습니다. 지속적으로 증가하는지 확인이 필요합니다."
+      },
+      {
+        "criterion": "grounding",
+        "status": "pass",
+        "quote": "두 서비스의 성능 저하가 공통 원인으로 발생했을 가능성을 고려할 수 있으나, 현재 제공된 정보만으로는 직접적인 상관관계나 공통 원인을 확정할 수 없습니다.",
+        "evidence_ids": [
+          4
+        ],
+        "reason": "가설과 사실을 명확히 구분하고 있습니다.",
+        "correction": ""
+      },
+      {
+        "criterion": "coverage",
+        "status": "pass",
+        "quote": "두 서비스의 성능 저하가 공통 원인으로 발생했을 가능성을 고려할 수 있으나, 현재 제공된 정보만으로는 직접적인 상관관계나 공통 원인을 확정할 수 없습니다.",
+        "evidence_ids": [
+          4
+        ],
+        "reason": "모든 요청된 시스템과 질문이 다루어졌습니다.",
+        "correction": ""
+      },
+      {
+        "criterion": "discrepancy",
+        "status": "pass",
+        "quote": "두 서비스 모두 'degraded' 상태로 성능 저하가 발생하고 있습니다.",
+        "evidence_ids": [
+          0,
+          1
+        ],
+        "reason": "사용자가 주장한 문제와 현재 관찰된 상태가 일치합니다.",
+        "correction": ""
+      }
+    ]
+  }
+}

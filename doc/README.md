@@ -240,6 +240,8 @@ all_total_vue/
 │
 ├── agent/
 │   ├── deps.py              # SupervisorDeps 의존성 주입
+│   ├── model_factory.py     # 환경변수·기본값에 따른 fast/Writer/Validator 모델 생성
+│   ├── writer.py            # OpenAI·Ollama Writer의 공통 프롬프트·근거·피드백 구성
 │   ├── graph.py              # v2 LangGraph StateGraph (route/plan/gate/research/replan_check/analysis/write/validate/finalize)
 │   ├── supervisor_v1.py      # legacy 선형 파이프라인 (버전 토글 대상)
 │   ├── fake_llm.py           # LLM_BACKEND=fake — 결정론적 fast/quality 모델 (route/plan/analyze/chat/write)
