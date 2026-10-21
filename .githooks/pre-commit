@@ -1,3 +1,5 @@
 #!/bin/sh
-# 커밋 전에 CI와 같은 Ruff 검사를 실행한다.
-exec sh sh/lint.sh
+# 커밋 전에 CI와 같은 Ruff 검사와 오프라인 테스트를 실행한다.
+set -eu
+sh sh/lint.sh
+exec sh sh/test.sh

@@ -111,7 +111,7 @@ sh sh/lint.sh     # Ruff 정적 검사
 sh sh/test.sh     # pytest 회귀·평가 테스트
 ```
 
-커밋 전에 Ruff 검사가 자동으로 돌도록 clone 후 한 번 훅 경로를 지정합니다.
+커밋 전에 Ruff 검사와 테스트가 자동으로 돌도록 clone 후 한 번 훅 경로를 지정합니다. 급할 때는 `git commit --no-verify`로 건너뛸 수 있습니다.
 
 ```bash
 git config core.hooksPath .githooks
