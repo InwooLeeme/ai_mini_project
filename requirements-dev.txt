@@ -1,3 +1,4 @@
-# 기존 실행 의존성과 검증에 사용한 pytest 버전
+# 기존 실행 의존성과 검증에 사용한 개발 도구 버전
 -r requirements.txt
 pytest==9.1.1
+ruff==0.17.1

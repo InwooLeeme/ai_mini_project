@@ -13,7 +13,7 @@ incident: resolve_targets(불명확하면 확인 요청으로 종료)
 import asyncio
 import math
 from functools import partial
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph

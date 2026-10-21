@@ -6,7 +6,6 @@ agent는 이 서버의 어떤 capability도 직접 호출하지 않는다. 여�
 시뮬레이션하기 위한 decoy 서버다 — mcp_server.py(runbook)와 이름이 겹치지 않는
 내부 API 문서 resource만 제공한다.
 """
-from pathlib import Path
 
 from fastmcp import FastMCP
 

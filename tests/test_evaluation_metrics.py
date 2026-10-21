@@ -1,7 +1,6 @@
 """누락·실패를 분모에서 숨기거나 검색 점수를 답변 점수로 바꾸는 회귀를 막는다."""
 import copy
 
-import pytest
 
 from evaluation.metrics import score_record, summarize
 

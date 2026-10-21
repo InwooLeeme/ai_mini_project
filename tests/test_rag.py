@@ -89,7 +89,7 @@ def test_graph_passes_retrieved_sources_to_writer_without_legacy_gap():
 
 
 def test_no_evidence_answer_does_not_call_model_or_recommend_restart():
-    module = rag()
+    rag()
     from agent.graph import write_node
     from unittest.mock import patch
     state = {"query": "인증서 갱신", "collected": [], "events": [],

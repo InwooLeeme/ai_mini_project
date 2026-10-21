@@ -1,12 +1,7 @@
 import json
-import socket
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
-from evaluation.contracts import write_json
 from evaluation.run_after import collect, validate_health, prepare_output, snapshot_sources, measure_http
 
 

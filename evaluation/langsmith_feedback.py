@@ -1,6 +1,6 @@
 """기존 기록을 같은 데이터셋의 새 비교 실험으로 게시한다. 원본 trace는 수정하지 않는다."""
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os

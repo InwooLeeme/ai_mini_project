@@ -16,10 +16,16 @@ Validator 내용 검증을 포함한 현재 동작은 [내용 검증 안내](../
 
 ```sh
 .venv/bin/python -m pip install -r requirements-dev.txt
+sh sh/lint.sh
 sh sh/test.sh
 # CI나 다른 가상환경
+PYTHON_BIN=python sh sh/lint.sh
 PYTHON_BIN=python sh sh/test.sh --junitxml=/tmp/incident-tests.xml
 ```
+
+Ruff는 `ruff.toml`의 `E9`, `F` 규칙으로 Python 코드의 오류·미사용 import 등을 검사한다.
+린트와 pytest는 별도 명령이며, CI에서는 린트 통과 후 테스트를 실행한다.
+자동 수정·포맷 검사·별도 Ruff 보고서 생성은 수행하지 않는다.
 
 `.env` 로딩·원격 추적을 끄고 테스트용 키를 사용한다. 실제 로컬 stdio MCP와 SQLite
 통합 테스트는 포함하지만 OpenAI·Ollama 모델 호출은 없다. 테스트 대역은 HTTP/SDK

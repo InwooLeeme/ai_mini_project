@@ -156,7 +156,6 @@ def test_cancellation_propagates():
 
 
 def test_semantic_error_finishes_with_limited_observations_and_real_cost():
-    import json
     from agent.validation import AnswerValidator
     result = asyncio.run(validate_node({
         'draft': '1) payments-service CPU 91%입니다. 2) 로그를 확인해 원인을 확정했습니다.',
@@ -192,7 +191,6 @@ def test_stream_labels_draft_and_limited_result():
 def test_real_review_adapter_sends_grounding_context_and_preserves_usage(monkeypatch, backend):
     import json
     import httpx
-    from agent.validation import AnswerValidator
     from agent.openai_llm import OpenAIFastLLM
     from agent.ollama_llm import OllamaFastLLM
     original = httpx.AsyncClient
