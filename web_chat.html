@@ -85,6 +85,8 @@
   .validation-label.rejected { color: #f47067; background: rgba(244, 112, 103, 0.14); }
   .target-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .target-choices button { padding: 7px 10px; font-size: 13px; }
+  .row.error .bubble { background: rgba(244, 112, 103, 0.1); border: 1px solid #6b3a3a; color: #f4b0aa; }
+  .row.error button { display: block; margin-top: 10px; padding: 7px 12px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -108,6 +110,12 @@
                     :disabled="sending" @click="chooseTarget(target)">{{ target }}</button>
             <button type="button" :disabled="sending" @click="chooseTarget('취소')">취소</button>
           </div>
+        </div>
+      </div>
+
+      <div v-else-if="item.kind === 'error'" class="row error" role="alert">
+        <div class="bubble">서버 연결이 끊겨 답변을 받지 못했습니다. 백엔드가 실행 중인지 확인해 주세요.
+          <button type="button" :disabled="sending" @click="retry(item.retryText)">다시 시도</button>
         </div>
       </div>
 
@@ -239,7 +247,16 @@ createApp({
         scrollToBottom();
       };
 
-      es.onerror = () => { es.close(); sending.value = false; stepsItem.finished = true; };
+      es.onerror = () => {
+        es.close(); sending.value = false; stepsItem.finished = true;
+        log.value.push({ id: nextId++, kind: 'error', retryText: text });
+        scrollToBottom();
+      };
+    }
+
+    function retry(text) {
+      input.value = text;
+      onSubmit();
     }
 
     function chooseTarget(target) {
@@ -247,7 +264,7 @@ createApp({
       onSubmit();
     }
 
-    return { backendLabel, log, input, sending, logEl, onSubmit, chooseTarget };
+    return { backendLabel, log, input, sending, logEl, onSubmit, chooseTarget, retry };
   },
 }).mount('#app');
 </script>
