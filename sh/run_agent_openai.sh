@@ -38,6 +38,7 @@ fi
 
 echo "LangSmith: project=$LANGCHAIN_PROJECT tracing=${LANGCHAIN_TRACING_V2:-}"
 echo "모델: fast=$FAST_MODEL / writer=$QUALITY_MODEL / validator=$VALIDATOR_MODEL"
+echo "RAG: embedding=${RAG_OPENAI_EMBEDDING_MODEL:-text-embedding-3-small} / selection=${RAG_OPENAI_SELECTION_MODEL:-gpt-4o-mini}"
 echo
 echo "⚠️  에이전트가 떠 있는 동안 보내는 요청마다 실제 OpenAI API가 호출되어 계정에"
 echo "   비용이 청구됩니다 (결제 수단 연결 여부·키가 본인 계정 것인지 확인하세요)."
@@ -59,7 +60,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ── 2) 서버 기동 (백그라운드로 띄운 뒤 준비될 때까지 대기) ─────────────
-LLM_BACKEND=openai SUPERVISOR_VERSION=v2 python3 server.py &
+LLM_BACKEND=openai RAG_BACKEND=openai SUPERVISOR_VERSION=v2 python3 server.py &
 SERVER_PID=$!
 for _ in $(seq 1 40); do
     curl -s http://127.0.0.1:8100/health >/dev/null 2>&1 && break
@@ -72,7 +73,7 @@ curl -s http://127.0.0.1:8100/health | python3 -m json.tool --no-ensure-ascii
 cat <<EOF
 
 ################################################################
- 에이전트가 떠 있습니다 (http://127.0.0.1:8100, LLM_BACKEND=openai)
+ 에이전트가 떠 있습니다 (http://127.0.0.1:8100, LLM_BACKEND=openai, RAG_BACKEND=openai)
  ⚠️  아래 요청들은 전부 실제 과금 호출입니다.
 ################################################################
 
