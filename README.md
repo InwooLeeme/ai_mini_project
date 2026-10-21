@@ -111,6 +111,12 @@ sh sh/lint.sh     # Ruff 정적 검사
 sh sh/test.sh     # pytest 회귀·평가 테스트
 ```
 
+커밋 전에 Ruff 검사가 자동으로 돌도록 clone 후 한 번 훅 경로를 지정합니다.
+
+```bash
+git config core.hooksPath .githooks
+```
+
 실제 모델을 호출하는 회귀 평가와 LangSmith 비교 실험은 [evaluation/README.md](evaluation/README.md)를 참고하세요.
 
 ## 프로젝트 구조
