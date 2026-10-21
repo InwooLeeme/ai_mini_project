@@ -74,6 +74,17 @@ def test_health_rejects_wrong_backend_model_or_version():
             validate_health({**good, k: v}, m)
 
 
+def test_health_checks_separately_configured_validator():
+    manifest = {'requested_fast_model': 'gpt-4o-mini', 'requested_quality_model': 'gpt-4o',
+                'requested_validator_model': 'review-model'}
+    health = {'llm_backend': 'openai', 'supervisor_version': 'v2',
+              'fast_llm': 'openai:gpt-4o-mini', 'quality_llm': 'openai:gpt-4o',
+              'validator_llm': 'openai:review-model'}
+    validate_health(health, manifest)
+    with pytest.raises(ValueError, match='model'):
+        validate_health({**health, 'validator_llm': 'openai:gpt-4o'}, manifest)
+
+
 def test_invalid_http_response_is_preserved_as_error_without_leaking_body(monkeypatch):
     import io
     monkeypatch.setattr('evaluation.run_after.request.urlopen', lambda *a, **kw: io.BytesIO(b'{"secret": "private"}'))

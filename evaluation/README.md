@@ -6,6 +6,10 @@ Before는 원본 v2의 prepared 실행이며 v1이 아니다. 평가용으로 �
 Validator 내용 검증을 포함한 현재 동작은 [내용 검증 안내](../doc/answer-validation.md)를 참조한다.
 아래 2026-10-21 최초 검증 기록은 내용 검증 도입 전의 결과이며 새 실행과 구분한다.
 
+현재 평가 실행은 `OPENAI_VALIDATOR_MODEL`(미설정·빈 값이면 `gpt-4o`)을 별도로 적용하고
+`manifest.json`의 `requested_validator_model`에 기록한다. `/health`의 실제 설정과
+대조하며, Writer·fast 모델은 기존 Before 고정 조건을 유지한다.
+
 ## 1. 자동화 테스트
 
 프로젝트 루트에서 실행한다. Python 3.11 이상이 필요하며 현재 검증 환경은 3.14다.

@@ -56,12 +56,15 @@ def create_app(
 @router.get("/health")
 async def health(request: Request):
     app = request.app
+    deps = app.state.deps
+    validator_model = deps.answer_validator.model if deps.answer_validator else deps.quality_llm
     return {"status": "ok", "instance_id": app.state.instance_id,
             "creation_count": app.state.creation_count,
             "supervisor_version": app.state.deps.version,
             "llm_backend": app.state.llm_backend,
             "fast_llm": app.state.deps.fast_llm.name,
-            "quality_llm": app.state.deps.quality_llm.name}
+            "quality_llm": app.state.deps.quality_llm.name,
+            "validator_llm": getattr(validator_model, "name", None) if deps.version == "v2" else None}
 
 
 @router.get("/version")

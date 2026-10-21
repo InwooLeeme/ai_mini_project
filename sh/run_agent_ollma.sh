@@ -16,9 +16,6 @@ cd "$(dirname "$0")/.."
 # 경우가 있어, 이 프로젝트 전용 .venv가 있으면 PATH 맨 앞에 명시적으로 꽂아둔다.
 [ -x ".venv/bin/python3" ] && export PATH="$PWD/.venv/bin:$PATH"
 
-FAST_MODEL="${OLLAMA_FAST_MODEL:-qwen3:0.6b}"
-QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-qwen3:8b}"
-
 # ── 0) LangSmith 환경 ──────────────────────────────────────────────────
 if [ ! -f .env ]; then
     echo "ERROR: .env가 없습니다 — .env.example을 복사해 .env로 만들고 본인 API 키를 채워주세요."
@@ -26,9 +23,16 @@ if [ ! -f .env ]; then
     exit 1
 fi
 set -a; source .env; set +a
+FAST_MODEL="${OLLAMA_FAST_MODEL:-qwen3:0.6b}"
+QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-qwen3:8b}"
+VALIDATOR_MODEL="${OLLAMA_VALIDATOR_MODEL:-qwen3:8b}"
+MODELS=("$FAST_MODEL" "$QUALITY_MODEL")
+if [ "$VALIDATOR_MODEL" != "$FAST_MODEL" ] && [ "$VALIDATOR_MODEL" != "$QUALITY_MODEL" ]; then
+    MODELS+=("$VALIDATOR_MODEL")
+fi
 export LANGCHAIN_PROJECT="capstone-all-total-ollama"   # fake 모드와 프로젝트 분리
 echo "LangSmith: project=$LANGCHAIN_PROJECT tracing=${LANGCHAIN_TRACING_V2:-}"
-echo "모델: fast=$FAST_MODEL / quality=$QUALITY_MODEL"
+echo "모델: fast=$FAST_MODEL / writer=$QUALITY_MODEL / validator=$VALIDATOR_MODEL"
 
 # ── 1) Ollama 데몬 확인 (없으면 기동) ──────────────────────────────────
 STARTED_OLLAMA=""
@@ -44,14 +48,14 @@ fi
 curl -s --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 \
     || { echo "ERROR: ollama serve 기동 실패"; exit 1; }
 
-for m in "$FAST_MODEL" "$QUALITY_MODEL"; do
+for m in "${MODELS[@]}"; do
     # grep -q는 pipefail에서 SIGPIPE(141)를 유발하므로 전체를 읽는 형태로 검사
     ollama list | grep "^${m}" >/dev/null \
         || { echo "ERROR: 모델 $m 미설치 — 'ollama pull $m' 후 재실행"; exit 1; }
 done
 
 echo "모델 웜업 중 (최초 로드 수 초)..."
-for m in "$FAST_MODEL" "$QUALITY_MODEL"; do
+for m in "${MODELS[@]}"; do
     curl -s http://127.0.0.1:11434/api/generate \
         -d "{\"model\":\"$m\",\"prompt\":\"hi\",\"stream\":false,\"options\":{\"num_predict\":1}}" >/dev/null
 done

@@ -44,6 +44,8 @@ def validate_health(health, manifest):
     expected = {"llm_backend": "openai", "supervisor_version": "v2",
                 "fast_llm": "openai:" + manifest["requested_fast_model"],
                 "quality_llm": "openai:" + manifest["requested_quality_model"]}
+    if "requested_validator_model" in manifest:
+        expected["validator_llm"] = "openai:" + manifest["requested_validator_model"]
     if any(health.get(k) != v for k, v in expected.items()):
         raise ValueError("evaluation server backend/model/version mismatch")
 
@@ -139,6 +141,7 @@ def main(argv=None):
                 "repetitions", "concurrency", "client_retry", "tracing_enabled", "warmup", "conditions", "dataset_sha256")}
     manifest["conditions"] = {k: v for k, v in before["conditions"].items() if k != "seven_feature_improvements"}
     manifest.update(run_id=run_id, phase="after", profile="current", before_run_id=before["run_id"],
+                    requested_validator_model=config.get("OPENAI_VALIDATOR_MODEL") or "gpt-4o",
                     data_sha256=baseline["data_sha256"], measurement_status="starting", completed_plan=False,
                     langsmith=trace_public, planned_requests=len(plan), actual_billed_usd=None,
                     recorded_requests=0, source_sha256=snapshot_sources(ROOT, output / "source"),
@@ -163,6 +166,7 @@ def main(argv=None):
         env = dict(os.environ)
         env.update(OPENAI_API_KEY=config["OPENAI_API_KEY"], LLM_BACKEND="openai", SUPERVISOR_VERSION="v2",
                    OPENAI_FAST_MODEL=before["requested_fast_model"], OPENAI_QUALITY_MODEL=before["requested_quality_model"],
+                   OPENAI_VALIDATOR_MODEL=manifest["requested_validator_model"],
                    PYTHONDONTWRITEBYTECODE="1", PYTHON_DOTENV_DISABLED="1")
         env.update(trace_env)
         for name in ("RAG_OLLAMA_URL", "RAG_EMBEDDING_MODEL", "RAG_SELECTION_MODEL"):

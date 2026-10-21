@@ -134,3 +134,46 @@ def test_default_cli_preflight_never_reads_credentials_or_starts_network(baselin
     monkeypatch.setattr(runner.subprocess, 'Popen', forbidden)
     assert runner.main(['--before-dir', str(before)]) == 0
     assert not (root / 'evaluation').exists()
+
+
+@pytest.mark.parametrize('configured,expected', [(None, 'gpt-4o'), ('review-custom', 'review-custom')])
+def test_after_runner_records_and_forwards_validator_from_dotenv(baseline, monkeypatch, configured, expected):
+    import dotenv
+    import evaluation.run_after as runner
+    root, before = baseline
+    monkeypatch.syspath_prepend(str(runner.ROOT / 'eval'))
+    monkeypatch.setattr(runner, 'ROOT', root)
+    for key in ('OPENAI_VALIDATOR_MODEL', 'OPENAI_QUALITY_MODEL', 'OPENAI_FAST_MODEL'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(dotenv, 'dotenv_values', lambda path: {'OPENAI_VALIDATOR_MODEL': configured})
+    for name in ('server.py', 'mcp_server.py', 'mcp_server_docs.py'):
+        (root / name).write_text('# snapshot fixture')
+
+    class LocalPort:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def bind(self, address):
+            pass
+
+        def getsockname(self):
+            return ('127.0.0.1', 18100)
+
+    monkeypatch.setattr(runner.socket, 'socket', LocalPort)
+    environments = []
+
+    def capture_start(*args, env, **kwargs):
+        environments.append(env)
+        raise RuntimeError('stop before starting an external process')
+
+    monkeypatch.setattr(runner.subprocess, 'Popen', capture_start)
+    output = root / 'evaluation/results/check'
+    assert runner.main(['--before-dir', str(before), '--run', '--output', str(output)]) == 1
+    manifest = json.loads((output / 'manifest.json').read_text())
+    assert manifest['requested_validator_model'] == expected
+    assert len(environments) == 1
+    assert environments[0]['OPENAI_VALIDATOR_MODEL'] == expected
+    assert environments[0]['OPENAI_QUALITY_MODEL'] == 'gpt-4o'

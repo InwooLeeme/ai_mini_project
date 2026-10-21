@@ -12,6 +12,7 @@ from .graph import build_graph
 from .mcp_client import MCPClient
 from .session_store import SqliteSessionStore
 from .rag import build_retriever
+from .validation import AnswerValidator
 
 
 @dataclass
@@ -43,6 +44,21 @@ def build_llms():
     fast = FastLLM("fast-model-stub", usd_per_1k_tokens=0.00015)
     quality = QualityLLM("quality-model-stub", usd_per_1k_tokens=0.005)
     return backend, fast, quality
+
+
+def build_answer_validator(backend: str, fallback_model) -> AnswerValidator:
+    """실모델 검증 설정은 Writer와 독립적이며 fake/주입 모델은 기존 동작을 유지한다."""
+    if backend == "openai":
+        from .openai_llm import OpenAILLM
+        model = OpenAILLM(os.environ.get("OPENAI_VALIDATOR_MODEL") or "gpt-4o",
+                          usd_per_1k_tokens=0.005)
+    elif backend == "ollama":
+        from .ollama_llm import OllamaLLM
+        model = OllamaLLM(os.environ.get("OLLAMA_VALIDATOR_MODEL") or "qwen3:8b",
+                          usd_per_1k_tokens=0.005)
+    else:
+        model = fallback_model
+    return AnswerValidator(model)
 
 
 def _flush_traces():
@@ -77,6 +93,8 @@ async def create_runtime(
             session_store=store, version=os.environ.get("SUPERVISOR_VERSION", "v2"),
             evidence_collector=MCPEvidenceCollector(mcp),
         )
+        if deps.version == "v2":
+            deps.answer_validator = build_answer_validator(backend, quality_llm)
         if deps.version == "v2" and retriever_factory is not None:
             deps.runbook_retriever = await retriever_factory(mcp)
         graph = build_graph(deps) if deps.version == "v2" else None

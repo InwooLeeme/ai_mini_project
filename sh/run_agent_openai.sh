@@ -19,9 +19,6 @@ cd "$(dirname "$0")/.."
 # 경우가 있어, 이 프로젝트 전용 .venv가 있으면 PATH 맨 앞에 명시적으로 꽂아둔다.
 [ -x ".venv/bin/python3" ] && export PATH="$PWD/.venv/bin:$PATH"
 
-FAST_MODEL="${OPENAI_FAST_MODEL:-gpt-4o-mini}"
-QUALITY_MODEL="${OPENAI_QUALITY_MODEL:-gpt-4o}"
-
 # ── 0) 환경 변수 ───────────────────────────────────────────────────────
 if [ ! -f .env ]; then
     echo "ERROR: .env가 없습니다 — .env.example을 복사해 .env로 만들고 본인 API 키를 채워주세요."
@@ -29,6 +26,9 @@ if [ ! -f .env ]; then
     exit 1
 fi
 set -a; source .env; set +a
+FAST_MODEL="${OPENAI_FAST_MODEL:-gpt-4o-mini}"
+QUALITY_MODEL="${OPENAI_QUALITY_MODEL:-gpt-4o}"
+VALIDATOR_MODEL="${OPENAI_VALIDATOR_MODEL:-gpt-4o}"
 export LANGCHAIN_PROJECT="capstone-all-total-openai"   # fake/ollama 모드와 프로젝트 분리
 
 if [ -z "${OPENAI_API_KEY:-}" ] || [ "$OPENAI_API_KEY" = "sk-..." ]; then
@@ -37,7 +37,7 @@ if [ -z "${OPENAI_API_KEY:-}" ] || [ "$OPENAI_API_KEY" = "sk-..." ]; then
 fi
 
 echo "LangSmith: project=$LANGCHAIN_PROJECT tracing=${LANGCHAIN_TRACING_V2:-}"
-echo "모델: fast=$FAST_MODEL / quality=$QUALITY_MODEL"
+echo "모델: fast=$FAST_MODEL / writer=$QUALITY_MODEL / validator=$VALIDATOR_MODEL"
 echo
 echo "⚠️  에이전트가 떠 있는 동안 보내는 요청마다 실제 OpenAI API가 호출되어 계정에"
 echo "   비용이 청구됩니다 (결제 수단 연결 여부·키가 본인 계정 것인지 확인하세요)."

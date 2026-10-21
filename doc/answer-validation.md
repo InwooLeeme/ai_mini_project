@@ -2,8 +2,27 @@
 
 v2의 `write → validate → finalize` 흐름에서 `agent/validation.py`의
 `AnswerValidator`를 사용한다. `SupervisorDeps.answer_validator`로 교체할 수 있으며,
-기본값은 기존 quality 모델 설정을 재사용한다. 별도 모델 다운로드나 모델 설정 변경은 없다.
+실행 환경에서 Validator 모델을 Writer와 독립적으로 설정한다. 기본 모델은 기존과 같다.
 일반 대화와 대상 확인 질문은 이 진단 검증 경로를 실행하지 않는다.
+
+## 모델 설정
+
+| 백엔드 | Writer 설정 | Validator 설정 | 각각의 기본값 |
+| --- | --- | --- | --- |
+| OpenAI | `OPENAI_QUALITY_MODEL` | `OPENAI_VALIDATOR_MODEL` | `gpt-4o` |
+| Ollama | `OLLAMA_QUALITY_MODEL` | `OLLAMA_VALIDATOR_MODEL` | `qwen3:8b` |
+
+`.env` 또는 실행 환경변수로 설정한다. Validator 설정을 생략하거나 빈 값으로 두면
+위 기본값을 사용하며, Writer 모델을 바꿔도 Validator 모델은 함께 바뀌지 않는다.
+기존에 quality 모델을 재정의하여 두 역할에 사용했다면 Validator 변수에도 같은 모델을
+명시해야 그 조합을 유지할 수 있다. 백엔드는 기존 `LLM_BACKEND`를 함께 따른다.
+기존 공급자 어댑터가 지원하는 모델을 지정해야 하며, 모델별 호출 형식은 변경하지 않는다.
+서버 재시작 후 `/health`의 `quality_llm`과 `validator_llm`으로 적용 값을 확인한다.
+Ollama에서 새 Validator 모델을 선택하면 먼저 `ollama pull <모델명>`으로 설치한다.
+
+`fake`는 기존 의미 검사 시뮬레이션을 유지하고, v1은 Validator를 생성하지 않는다.
+직접 `SupervisorDeps`를 조립할 때는 `answer_validator`로 검증기를 주입한다.
+생략한 경우 그래프는 기존처럼 `quality_llm`을 사용한다.
 
 ## 검증과 재작성
 
@@ -44,7 +63,7 @@ OpenAI의 실제 토큰 스트리밍 추가와 화면 재배치는 이번 변경
 재작성 피드백·횟수 제한, HTTP/SSE 최종 응답과 세션 저장을 검사한다.
 실제 모델의 진단 품질은 별도의 동일 조건 평가와 수동 판정으로 확인한다.
 
-## 이번 검증 결과
+## 내용 검증 도입 당시 검증 결과
 
 - 전체 오프라인 회귀: 391 tests + 108 subtests 통과.
 - 최종 실제 평가 9/9 요청과 원본 LangSmith 입력·답변·토큰 대조 통과.
