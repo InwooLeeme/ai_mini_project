@@ -113,6 +113,16 @@ def test_injected_apps_keep_history_and_health_isolated():
     assert first_calls == second_calls == ["start", "stop"]
 
 
+def test_history_returns_saved_messages_for_thread_only():
+    app, _, _ = make_test_app()
+    with TestClient(app) as client:
+        client.post("/chat", json={"message": "제 이름은 민수입니다", "thread_id": "mine"})
+        history = client.get("/history", params={"thread_id": "mine"}).json()
+        assert [m["role"] for m in history["messages"]] == ["user", "assistant"]
+        assert history["messages"][0]["content"] == "제 이름은 민수입니다"
+        assert client.get("/history", params={"thread_id": "other"}).json() == {"messages": []}
+
+
 def test_incident_stream_preserves_events_final_answer_and_history():
     app, store, _ = make_test_app()
     with TestClient(app) as client:

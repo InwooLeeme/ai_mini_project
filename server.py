@@ -117,6 +117,12 @@ async def chat(req: ChatRequest, request: Request):
             "metadata": _metadata(request.app, result, run_id)}
 
 
+@router.get("/history")
+async def history(request: Request, thread_id: str = "default"):
+    """채팅 화면이 새로고침·재시작 뒤 이전 대화를 다시 그릴 수 있게 저장된 이력을 돌려준다."""
+    return {"messages": request.app.state.deps.session_store.load(thread_id)}
+
+
 @router.get("/chat/stream")
 async def chat_stream(request: Request, message: str, thread_id: str = "default"):
     """Wave 3 — 그래프의 노드별 진행 상황을 SSE로 스트리밍.
