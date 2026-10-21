@@ -46,3 +46,11 @@ ANALYSIS_INSTRUCTIONS = (
     "로그·시계열·의존성 정보는 제공되지 않았으므로 조회했다고 말하지 마라. "
     "공통 패턴의 근거가 부족하면 부족하다고 명시하라."
 )
+
+
+def analysis_facts(collected: list[dict]) -> str:
+    """분석 모델에 넘길 현재 모니터링 관측 요약."""
+    mon = [c["data"] for c in collected if c["source"] == "monitoring"]
+    return "\n".join(
+        f"- {d['system_name']}: 상태={d['status']}, CPU {d['cpu_percent']}%, "
+        f"알림 {d['alerts']}" for d in mon) or "(모니터링 데이터 없음)"

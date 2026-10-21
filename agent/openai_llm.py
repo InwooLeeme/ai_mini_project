@@ -18,18 +18,19 @@ OpenAI 계정에 실제 비용이 청구된다(run_openai.sh 실행 전 반드�
 
 사전 조건: 유효한 `OPENAI_API_KEY` 환경변수(.env).
 """
-import json
 import os
-import re
 
 import httpx
 from langsmith import get_current_run_tree, traceable
-from .analysis_policy import ANALYSIS_INSTRUCTIONS
+from .analysis_policy import ANALYSIS_INSTRUCTIONS, analysis_facts
+from .llm_roles import (PLAN_SYSTEM, ROUTE_SYSTEM, build_chat_prompt, parse_plan, parse_route,
+                        plan_user, rendered_prompt, token_usage)
 from .writer import build_writer_prompt
-from .targets import KNOWN_SYSTEMS, normalize_plan, resolve_targets
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
+# JSON 모드는 "유효한 JSON"만 보장할 뿐 스키마까지 강제하진 않으므로 공통 지시 뒤에
+# 원하는 필드를 텍스트로 덧붙인다(Ollama의 format=<JSON Schema>에 대응).
 ROUTE_INSTRUCTIONS = (
     'JSON 객체로만 응답하라. 스키마: '
     '{"route": "chat" 또는 "incident", "needs_analysis": true 또는 false}'
@@ -114,9 +115,7 @@ class OpenAILLM:
         # 기존 반환 계약의 기본값만 유지하며, 미측정값을 표준 추적의 0으로 기록하지 않는다.
         if type(tokens) is not int or tokens < 0:
             tokens = 0
-        usage = {"model": self.name, "tokens": tokens,
-                 "usd": round(tokens / 1000 * self.usd_per_1k, 6)}
-        return content, usage
+        return content, token_usage(self.name, tokens, self.usd_per_1k)
 
     def _chat(self, system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
         payload, headers = self._request(system, user, json_mode)
@@ -141,67 +140,28 @@ class OpenAIFastLLM(OpenAILLM):
 
     @traceable(run_type="llm", name="openai_fast.route")
     def route(self, query: str) -> tuple[dict, dict]:
-        system = ("당신은 ICT 운영 지원 라우터다. 사용자 요청을 분류하라. "
-                  "장애·성능 저하·지연·진단·모니터링·티켓 등 운영 이슈면 route=incident, "
-                  "인사·잡담·일반 질문이면 route=chat. "
-                  "needs_analysis는 패턴 비교/통계 분석이 꼭 필요할 때만 true. "
-                  + ROUTE_INSTRUCTIONS)
-        content, usage = self._chat(system, query, json_mode=True)
-        try:
-            raw = json.loads(content)
-            route = raw.get("route") if raw.get("route") in ("chat", "incident") else None
-            result = {"route": route or "chat",
-                      "needs_analysis": bool(raw.get("needs_analysis", False))}
-        except (json.JSONDecodeError, AttributeError):
-            # JSON 모드는 "유효한 JSON"만 보장할 뿐 스키마까지 강제하진 않으므로,
-            # 필드 누락·오탐 시 코드 레벨 fallback을 둔다(W6 정신, ollama_llm.py와 동일).
-            incident = bool(re.search(r"장애|진단|다운|지연|급증|incident|티켓", query))
-            result = {"route": "incident" if incident else "chat",
-                      "needs_analysis": False}
-        return result, usage
+        content, usage = self._chat(ROUTE_SYSTEM + " " + ROUTE_INSTRUCTIONS, query, json_mode=True)
+        return parse_route(content, query), usage
 
     @traceable(run_type="llm", name="openai_fast.plan")
     def plan(self, query: str, procedure_prompt: str) -> tuple[dict, dict]:
-        system = ("당신은 ICT 운영 Supervisor의 planning 노드다. 표준 진단 절차에 따라 "
-                  "실행 계획(tasks)을 JSON으로 세워라. "
-                  "사용자 요청에 등장한 시스템마다 agent=research task를 하나씩 세워라 "
-                  f"(알려진 시스템: {', '.join(sorted(KNOWN_SYSTEMS))} — 특정 시스템이 "
-                  "언급되지 않았으면 조사 대상을 임의로 만들지 마라). "
-                  "패턴 분석이 꼭 필요하다고 판단되면 agent=analysis task를 추가해도 된다. "
-                  + PLAN_INSTRUCTIONS)
-        user = f"## 표준 절차\n{procedure_prompt}\n\n## 사용자 요청\n{query}"
-        content, usage = self._chat(system, user, json_mode=True)
-
-        # 코드 레벨 정규화 — JSON 형식은 지켜져도 내용은 흔들릴 수 있으므로
-        # (대상 시스템 오타, task 누락/중복) 실행 가능한 형태로 보정한다.
-        try:
-            raw = json.loads(content)
-        except json.JSONDecodeError:
-            raw = {"needs_analysis": False, "tasks": []}
-        result = normalize_plan(raw, resolve_targets(query).targets)
-        return result, usage
+        content, usage = self._chat(PLAN_SYSTEM + " " + PLAN_INSTRUCTIONS,
+                                    plan_user(query, procedure_prompt), json_mode=True)
+        return parse_plan(content, query), usage
 
     @traceable(run_type="llm", name="openai_fast.analyze")
     async def analyze(self, collected: list[dict]) -> tuple[str, dict]:
         """현재 관측의 비교 가설을 반환하며 RAG 실행을 막지 않는다."""
-        mon = [c["data"] for c in collected if c["source"] == "monitoring"]
-        facts = "\n".join(
-            f"- {d['system_name']}: 상태={d['status']}, CPU {d['cpu_percent']}%, "
-            f"알림 {d['alerts']}" for d in mon) or "(모니터링 데이터 없음)"
-        return await self._achat(ANALYSIS_INSTRUCTIONS, facts)
+        return await self._achat(ANALYSIS_INSTRUCTIONS, analysis_facts(collected))
 
     @traceable(run_type="llm", name="openai_fast.chat")
     async def chat(self, query: str, history: list[dict], on_token=None) -> tuple[str, dict]:
         """ollama_llm.py와 인터페이스(on_token 콜백)만 맞춘다 — OpenAI Chat Completions를
         아직 stream=True로 호출하지 않아 토큰 단위 중계는 하지 않고 완성된 응답을 한 번에
         전달한다."""
-        system = ("당신은 간결한 한국어 비서다. 한두 문장으로 답하라. "
-                  "대화 이력에서 사용자가 밝힌 이름이 있으면 정확히 기억해 답하라.")
-        rendered = "\n".join(f"{m['role']}: {m['content']}" for m in history[-10:])
-        user = (f"## 지금까지의 대화\n{rendered or '(없음)'}\n\n"
-                f"## 사용자의 새 메시지\n{query}")
+        system, user = build_chat_prompt(query, history)
         content, usage = self._chat(system, user)
-        usage["prompt"] = f"[SYSTEM]\n{system}\n\n[USER]\n{user}"
+        usage["prompt"] = rendered_prompt(system, user)
         if on_token is not None:
             on_token(content)
         return content, usage
@@ -217,7 +177,7 @@ class OpenAIQualityLLM(OpenAILLM):
         전달한다."""
         system, user = build_writer_prompt(query, collected, feedback)
         content, usage = self._chat(system, user)
-        usage["prompt"] = f"[SYSTEM]\n{system}\n\n[USER]\n{user}"
+        usage["prompt"] = rendered_prompt(system, user)
         if on_token is not None:
             on_token(content)
         return content, usage

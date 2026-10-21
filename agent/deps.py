@@ -8,14 +8,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from .evidence import EvidenceCollector
+from .llm_roles import FastModel, QualityModel
 from .rag import RunbookRetriever
 from .validation import AnswerValidator
 
 
 @dataclass
 class SupervisorDeps:
-    fast_llm: Any        # Wave 10a — 분류/계획 등 짧은 단계용 저비용 모델
-    quality_llm: Any     # Wave 10a — 최종 답변 작성용 고품질 모델
+    fast_llm: FastModel        # Wave 10a — 분류/계획 등 짧은 단계용 저비용 모델
+    quality_llm: QualityModel  # Wave 10a — 최종 답변 작성용 고품질 모델
     mcp: Any             # Wave 2  — MCP stdio 클라이언트 (Tool/Resource/Prompt)
     session_store: Any   # Wave 12 — SQLite 세션 저장소
     version: str         # Wave 14 — SUPERVISOR_VERSION (v1/v2)

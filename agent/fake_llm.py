@@ -8,6 +8,7 @@ import re
 
 from langsmith import traceable
 
+from .llm_roles import is_incident, token_usage
 from .targets import normalize_plan, resolve_targets
 
 
@@ -18,8 +19,7 @@ class FakeLLM:
 
     def _usage(self, prompt: str, completion: str) -> dict:
         tokens = (len(prompt) + len(completion)) // 4 + 1
-        return {"model": self.name, "tokens": tokens,
-                "usd": round(tokens / 1000 * self.usd_per_1k, 6)}
+        return token_usage(self.name, tokens, self.usd_per_1k)
 
     async def review(self, query, draft, collected, targets):
         """오프라인 데모용 응답. 실제 의미 판단 능력이나 품질 평가 결과가 아니다."""
@@ -38,8 +38,7 @@ class FastLLM(FakeLLM):
     @traceable(run_type="llm", name="fast_llm.route")
     def route(self, query: str) -> tuple[dict, dict]:
         """Wave 5 — 쿼리 라우팅. 장애 관련이면 incident 파이프라인, 아니면 chat 직행."""
-        incident = bool(re.search(r"장애|진단|다운|지연|급증|incident|티켓", query))
-        result = {"route": "incident" if incident else "chat", "needs_analysis": False}
+        result = {"route": "incident" if is_incident(query) else "chat", "needs_analysis": False}
         return result, self._usage(query, str(result))
 
     @traceable(run_type="llm", name="fast_llm.plan")
