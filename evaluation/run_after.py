@@ -145,7 +145,7 @@ def main(argv=None):
                     runner_sha256={str(p.relative_to(ROOT)): sha256(p) for p in (ROOT / "evaluation").glob("*.py")},
                     rag={"embedding_model": config.get("RAG_EMBEDDING_MODEL", "embeddinggemma:300m"),
                          "selection_model": config.get("RAG_SELECTION_MODEL", "qwen3:8b")},
-                    feature_scope="current checkout; specialist/log tools and semantic validation not implemented")
+                    feature_scope="current checkout; content validation enabled; specialist/log tools not implemented")
     write_json(output / "manifest.json", manifest)
     shutil.copyfile(args.before_dir / "dataset.json", output / "dataset.json")
     write_json(output / "request-plan.json", plan)
