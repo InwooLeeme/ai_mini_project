@@ -90,7 +90,8 @@
       </div>
 
       <div v-else-if="item.kind === 'steps'" class="steps">
-        <div v-for="(step, i) in item.steps" :key="i" class="step">{{ step }}</div>
+        <div v-for="(step, i) in item.steps" :key="i" class="step"
+             :class="{ done: item.finished || i < item.steps.length - 1 }">{{ step }}</div>
       </div>
 
       <div v-else-if="item.kind === 'agent'" class="row agent">
@@ -181,7 +182,7 @@ createApp({
       let choices = [];
 
       es.onmessage = (event) => {
-        if (event.data === '[DONE]') { es.close(); sending.value = false; return; }
+        if (event.data === '[DONE]') { es.close(); sending.value = false; stepsItem.finished = true; return; }
         let e;
         try { e = JSON.parse(event.data); } catch { return; }
 
@@ -229,7 +230,7 @@ createApp({
         scrollToBottom();
       };
 
-      es.onerror = () => { es.close(); sending.value = false; };
+      es.onerror = () => { es.close(); sending.value = false; stepsItem.finished = true; };
     }
 
     function chooseTarget(target) {
