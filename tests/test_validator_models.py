@@ -51,7 +51,8 @@ def test_legacy_runtime_does_not_construct_validator(monkeypatch):
 
 
 @pytest.mark.parametrize('backend', ['openai', 'ollama'])
-def test_graph_sends_writing_and_review_to_separate_models(monkeypatch, backend):
+@pytest.mark.parametrize('compact', [False, True])
+def test_graph_sends_writing_and_review_to_separate_models(monkeypatch, backend, compact):
     import json
     import httpx
     from agent.fake_llm import FastLLM
@@ -69,7 +70,11 @@ def test_graph_sends_writing_and_review_to_separate_models(monkeypatch, backend)
     def response(request):
         body = json.loads(request.content)
         requests.append(body)
-        content = draft if body['model'] == 'writer-custom' else review_reply()
+        review = json.loads(review_reply())
+        if compact:
+            review['checks'] = [{key: check[key] for key in ('criterion', 'status', 'evidence_ids')}
+                                for check in review['checks']]
+        content = draft if body['model'] == 'writer-custom' else json.dumps(review)
         payload = ({'model': body['model'], 'choices': [{'message': {'content': content}}],
                     'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120}}
                    if backend == 'openai' else
@@ -95,6 +100,9 @@ def test_graph_sends_writing_and_review_to_separate_models(monkeypatch, backend)
         assert result['reply'] == draft
         checks = [e for e in result['events'] if e['type'] == 'Validation']
         assert checks[-1]['status'] == 'passed'
+        assert len(checks[-1]['checks']) == 6
+        assert all(set(c) == {'criterion', 'status', 'quote', 'evidence_ids', 'reason', 'correction'}
+                   for c in checks[-1]['checks'])
         assert checks[-1]['usage']['model'] == f'{backend}:validator-custom'
         assert [r['model'] for r in requests] == ['writer-custom', 'validator-custom']
 

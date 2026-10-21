@@ -1,0 +1,44 @@
+{
+  "query": "gateway-service에서 payments-service로 가는 요청이 타임아웃 나고 있어요",
+  "draft": "1) <gateway-service>의 모니터링 알림에 따르면, 현재 상태는 'degraded'이며, 'upstream timeout to payments-service (504)'와 'network packet loss 3%' 알림이 발생했습니다. CPU 사용률은 30.0%, 메모리 사용률은 45.0%로 관측되었습니다.\n\n2) <payments-service>의 모니터링 알림에 따르면, 현재 상태는 'degraded'이며, 'CPU 91% (threshold 80%)'와 'payments-service-3 instance responding slow' 알림이 발생했습니다. CPU 사용률은 91.0%, 메모리 사용률은 55.0%로 관측되었습니다.\n\n3) 네트워크 타임아웃 대응을 위한 런북 절차에 따라, 다음 사항을 점검해야 합니다:\n   - DNS 해석 실패, 방화벽/보안그룹 변경, 로드밸런서 헬스체크 실패 중 최근 변경 사항이 있었는지 점검이 필요합니다. 변경 여부는 미확인입니다. 점검이 필요합니다.\n   - 특정 리전/가용영역에서만 발생하는지 여부를 확인하고, 해당 구간을 우회하는 라우팅으로 임시 전환할 필요가 있습니다. 현재 지속 여부는 미확인입니다.\n   - 타임아웃 값이 너무 짧아 정상 응답도 실패로 처리되는 경우라면, 임계값을 임시 상향해 2차 피해를 줄이는 방안을 고려해야 합니다. 현재 지속 여부는 미확인입니다.\n\n출처: runbook://incident-response/network-timeout",
+  "collected": [
+    {
+      "source": "monitoring",
+      "data": {
+        "system_name": "gateway-service",
+        "status": "degraded",
+        "cpu_percent": 30.0,
+        "memory_percent": 45.0,
+        "last_checked": "2026-10-21T14:39:31.117184",
+        "alerts": [
+          "upstream timeout to payments-service (504)",
+          "network packet loss 3%"
+        ]
+      }
+    },
+    {
+      "source": "monitoring",
+      "data": {
+        "system_name": "payments-service",
+        "status": "degraded",
+        "cpu_percent": 91.0,
+        "memory_percent": 55.0,
+        "last_checked": "2026-10-21T14:39:31.117986",
+        "alerts": [
+          "CPU 91% (threshold 80%)",
+          "payments-service-3 instance responding slow"
+        ]
+      }
+    },
+    {
+      "source": "runbook",
+      "data": "# Runbook: 네트워크 타임아웃 대응 절차\n\n1. get_monitoring_status로 어떤 시스템 간 호출에서 타임아웃이 발생하는지 확인한다.\n2. DNS 해석 실패, 방화벽/보안그룹 변경, 로드밸런서 헬스체크 실패 중 최근 변경 사항이 있었는지 점검한다.\n3. 특정 리전/가용영역에서만 발생하면 해당 구간을 우회하는 라우팅으로 임시 전환한다.\n4. 타임아웃 값이 너무 짧아 정상 응답도 실패로 처리되는 경우라면 임계값을 임시 상향해 2차 피해를 줄인다.\n5. 정상화 후 네트워크 경로 기록을 남기고, 재발 방지를 위해 헬스체크 주기와 재시도 정책을 재검토한다.\n",
+      "document_id": "network-timeout",
+      "uri": "runbook://incident-response/network-timeout"
+    }
+  ],
+  "targets": [
+    "gateway-service",
+    "payments-service"
+  ]
+}

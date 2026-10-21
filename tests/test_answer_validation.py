@@ -123,7 +123,7 @@ class ReviewStub:
 def run_review(model, *, timeout=1):
     from agent.validation import AnswerValidator
     return asyncio.run(AnswerValidator(model, timeout_seconds=timeout).validate(
-        'payments-service 진단', '1) payments-service CPU 91%입니다. 2) 로그를 조회해서 원인을 확인했습니다.',
+        'payments-service 진단', '1) payments-service CPU 91%입니다. 2) 로그에서 오류 원인이 발견되었습니다.',
         evidence(), ['payments-service']))
 
 
