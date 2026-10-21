@@ -4,7 +4,8 @@ from dataclasses import asdict, dataclass
 import json
 import re
 import time
-from typing import Protocol
+
+from .llm_roles import ReviewModel
 
 CRITERIA = ('numeric', 'conditions', 'temporal', 'grounding', 'coverage', 'discrepancy')
 REVIEW_SCHEMA = {
@@ -126,11 +127,6 @@ For an attribution correction, preserve relevant supported alerts (including rep
 duration and risk signals) in the replacement. Do not improve apparent certainty by
 deleting evidence. Reporting an alert and independently verifying it are different claims.
 """
-
-
-class ReviewModel(Protocol):
-    async def review(self, query: str, draft: str, collected: list[dict],
-                     targets: list[str]) -> tuple[str, dict]: ...
 
 
 def numeric_conditions(collected):

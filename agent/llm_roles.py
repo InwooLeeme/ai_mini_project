@@ -25,8 +25,13 @@ class FastModel(Protocol):
                    on_token: OnToken = None) -> tuple[str, dict]: ...
 
 
-class QualityModel(Protocol):
-    """최종 답변 작성 전담 (고품질 모델)."""
+class ReviewModel(Protocol):
+    async def review(self, query: str, draft: str, collected: list[dict],
+                     targets: list[str]) -> tuple[str, dict]: ...
+
+
+class QualityModel(ReviewModel, Protocol):
+    """최종 답변 작성 전담 (고품질 모델). 기본 답변 검증기도 같은 모델로 검토한다."""
     name: str
 
     async def write(self, query: str, collected: list[dict], attempt: int,
