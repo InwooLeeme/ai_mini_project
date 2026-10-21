@@ -111,6 +111,10 @@ def classify_followup(query: str) -> FollowupDecision:
                  r"새\s*(?:질문|요청)|새로|런북|절차|설명|"
                  r"\b(?:memory|disk|latency|error|new\s+question)\b", query, re.IGNORECASE):
         return FollowupDecision("new_request")
+    # 등록 시스템이 확정된 문장은 증상 표현과 무관하게 새 요청이다. 추측 표현은 선택으로 보지 않는다.
+    if (resolved.targets and resolved.reason is None
+            and not re.search(r"아마|일\s*거|\b(?:maybe|probably)\b", query, re.IGNORECASE)):
+        return FollowupDecision("new_request")
     if (_IDENTIFIER.search(query) or _ALIAS.search(query)
             or re.fullmatch(r"(?:네|응|예|맞아|맞아요|확인|yes|ok)[.!?]?", query, re.IGNORECASE)):
         return FollowupDecision("clarify")

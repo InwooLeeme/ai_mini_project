@@ -97,6 +97,19 @@ def test_new_diagnosis_after_confirmation_does_not_reuse_old_symptom():
         assert "CPU 급증" not in result["reply"]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_new_symptom_with_exact_targets_is_not_held_by_pending_question(stream):
+    # 증상 키워드 목록에 없는 표현이라도 등록 시스템을 정확히 지정하면 새 요청이다.
+    app, _, _ = make_test_app()
+    with TestClient(app) as client:
+        send(client, "로그인 응답 지연 진단해 주세요")
+        result = send(client, "gateway-service에서 payments-service로 가는 요청 타임아웃을 진단해 주세요",
+                      stream=stream)
+        assert not any(e["type"] == "TargetConfirmationRequired" for e in result["events"])
+        assert sorted(monitored(result)) == ["gateway-service", "payments-service"]
+        assert "로그인" not in result["reply"]
+
+
 def test_same_text_new_confirmation_survives_old_completion():
     app, store, _ = make_test_app()
     with TestClient(app) as client:
