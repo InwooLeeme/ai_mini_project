@@ -44,6 +44,13 @@ async def proxy_history(thread_id: str):
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.get("/threads")
+async def proxy_threads():
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(f"{BACKEND}/threads")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.post("/chat")
 async def proxy_chat(req: Request):
     body = await req.body()

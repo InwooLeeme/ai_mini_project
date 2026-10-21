@@ -123,6 +123,29 @@ def test_history_returns_saved_messages_for_thread_only():
         assert client.get("/history", params={"thread_id": "other"}).json() == {"messages": []}
 
 
+def test_store_lists_prefixed_threads_newest_first_with_first_question():
+    store = SqliteSessionStore(":memory:")
+    store.append("t-web-a", "user", "첫 질문")
+    store.append("t-web-a", "assistant", "답변")
+    store.append("default", "user", "직접 호출")
+    store.append("t-web-b", "user", "두 번째 대화")
+    store.append("t-web-a", "user", "이어진 질문")
+    assert [(t["thread_id"], t["title"]) for t in store.threads("t-web-")] == [
+        ("t-web-a", "첫 질문"), ("t-web-b", "두 번째 대화")]
+    assert store.threads("none-") == []
+    store.close()
+
+
+def test_threads_lists_web_conversations_only():
+    app, _, _ = make_test_app()
+    with TestClient(app) as client:
+        client.post("/chat", json={"message": "안녕하세요", "thread_id": "t-web-one"})
+        client.post("/chat", json={"message": "직접 호출", "thread_id": "default"})
+        threads = client.get("/threads").json()["threads"]
+        assert [(t["thread_id"], t["title"]) for t in threads] == [("t-web-one", "안녕하세요")]
+        assert threads[0]["updated"]
+
+
 def test_incident_stream_preserves_events_final_answer_and_history():
     app, store, _ = make_test_app()
     with TestClient(app) as client:

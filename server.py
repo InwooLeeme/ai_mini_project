@@ -123,6 +123,12 @@ async def history(request: Request, thread_id: str = "default"):
     return {"messages": request.app.state.deps.session_store.load(thread_id)}
 
 
+@router.get("/threads")
+async def threads(request: Request):
+    """채팅 화면이 만든 지난 대화를 최근 순으로 돌려준다. 직접 API로 만든 thread는 제외한다."""
+    return {"threads": request.app.state.deps.session_store.threads("t-web-")}
+
+
 @router.get("/chat/stream")
 async def chat_stream(request: Request, message: str, thread_id: str = "default"):
     """Wave 3 — 그래프의 노드별 진행 상황을 SSE로 스트리밍.

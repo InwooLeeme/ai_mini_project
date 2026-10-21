@@ -59,6 +59,18 @@ class SqliteSessionStore:
         )
         self.conn.commit()
 
+    def threads(self, prefix: str) -> list[dict]:
+        """접두사가 같은 대화를 최근 순으로, 첫 질문을 제목 삼아 돌려준다."""
+        rows = self.conn.execute(
+            "SELECT thread_id, MAX(created),"
+            " (SELECT content FROM messages f WHERE f.thread_id=m.thread_id AND f.role='user'"
+            "  ORDER BY rowid LIMIT 1)"
+            " FROM messages m WHERE substr(thread_id, 1, length(?))=?"
+            " GROUP BY thread_id ORDER BY MAX(rowid) DESC",
+            (prefix, prefix),
+        ).fetchall()
+        return [{"thread_id": t, "updated": u, "title": title or ""} for t, u, title in rows]
+
     def close(self) -> None:
         self.conn.close()
 

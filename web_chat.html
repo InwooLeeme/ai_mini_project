@@ -30,9 +30,10 @@
     background: var(--bg); color: var(--text);
     overflow: hidden;   /* #log만 스크롤되게, 바디 자체는 늘어나지 않게 고정 */
   }
-  #app {
-    flex: 1; min-height: 0;   /* Vue 마운트 루트가 header/#log/form을 감싸므로,
-                                 body의 flex 흐름이 여기까지 이어지게 한다 */
+  #app { flex: 1; min-height: 0; display: flex; }   /* 왼쪽 사이드바 | 대화 영역 */
+  .main {
+    flex: 1; min-width: 0; min-height: 0;   /* header/#log/form을 감싸므로,
+                                               body의 flex 흐름이 여기까지 이어지게 한다 */
     display: flex; flex-direction: column;
   }
   header {
@@ -48,6 +49,31 @@
   .backend-status.test { color: var(--warn); background: rgba(240, 163, 94, 0.12); }
   .backend-status.offline { color: var(--bad); background: rgba(244, 112, 103, 0.12); }
   .new-chat { font-weight: 500; }
+  .sidebar {
+    width: 260px; flex-shrink: 0; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px; padding: 12px 8px;
+    background: var(--code-bg);
+  }
+  .sidebar .new-chat { margin-bottom: 12px; }
+  .sidebar-title { padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .sidebar button {
+    flex-shrink: 0; border: none; border-radius: 10px; text-align: left;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sidebar button.current { background: var(--surface); }
+  .sidebar .empty { margin: 4px 14px; font-size: 13px; color: var(--muted); }
+  .threads-toggle, .scrim { display: none; }
+  /* 좁은 화면에서는 사이드바를 숨겼다가 헤더 버튼으로 왼쪽에서 꺼낸다. */
+  @media (max-width: 767px) {
+    .sidebar {
+      position: fixed; inset: 0 auto 0 0; z-index: 10; width: min(280px, 85vw);
+      transform: translateX(-100%); transition: transform 0.2s ease;
+    }
+    .sidebar.open { transform: none; }
+    .scrim { display: block; position: fixed; inset: 0; z-index: 5; background: rgba(0, 0, 0, 0.5); }
+    .threads-toggle { display: inline-block; }
+  }
+  @media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
   #log {
     flex: 1; min-height: 0;   /* flex 자식 기본 최소높이(콘텐츠 크기)를 풀어줘야
                                  내용이 길어져도 바디가 안 늘어나고 여기서만 스크롤됨 */
@@ -78,7 +104,12 @@
     max-width: 70%; padding: 10px 16px; border-radius: 20px;
     background: var(--surface); line-height: 1.5;
   }
-  .row.agent .bubble { width: 100%; }   /* 에이전트 답변은 말풍선 없이 본문처럼 보여준다 */
+  /* 에이전트 답변도 요청과 같은 배경의 말풍선으로 보여준다. 표·코드가 들어가므로 폭은 더 넓게 둔다. */
+  .row.agent .bubble {
+    max-width: 85%; min-width: 0; padding: 12px 16px; border-radius: 20px; background: var(--surface);
+  }
+  .row.agent .md code { background: var(--surface-hover); }   /* 말풍선 배경과 구분되게 한 단계 밝게 */
+  .row.agent .md pre code { background: none; }
   .row.agent.rejected .bubble {
     padding: 12px 16px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted);
   }
@@ -163,9 +194,19 @@
 </head>
 <body>
 <div id="app">
+  <nav class="sidebar" :class="{ open: threadsOpen }" aria-label="지난 대화">
+    <button type="button" class="new-chat" :disabled="sending" @click="newChat">＋ 새 대화</button>
+    <div class="sidebar-title">지난 대화</div>
+    <p v-if="threads === null" class="empty">목록을 불러오지 못했습니다.</p>
+    <p v-else-if="!threads.length" class="empty">지난 대화가 없습니다.</p>
+    <button v-for="t in threads || []" :key="t.thread_id" type="button" :disabled="sending"
+            :class="{ current: isCurrent(t.thread_id) }" :title="t.title" @click="openThread(t.thread_id)">{{ t.title || '(질문 없음)' }}</button>
+  </nav>
+  <div v-if="threadsOpen" class="scrim" @click="threadsOpen = false"></div>
+  <div class="main">
   <header>운영 인시던트 대응 에이전트
     <span class="backend-status" :class="backend.state" role="status">{{ backend.text }}</span>
-    <button type="button" class="new-chat" :disabled="sending" @click="newChat">새 대화</button>
+    <button type="button" class="threads-toggle" :aria-expanded="threadsOpen" @click="threadsOpen = !threadsOpen">지난 대화</button>
   </header>
   <div id="log" ref="logEl">
     <div v-if="!log.length" class="welcome">
@@ -231,6 +272,7 @@
     </div>
     <p class="hint">Enter로 보내고, Shift+Enter로 줄을 바꿉니다.</p>
   </form>
+  </div>
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -307,13 +349,41 @@ createApp({
     });
 
     // 서버에 저장된 이 thread의 이전 대화를 다시 그린다. 진행 단계·검증 표시는 저장되지 않아 말풍선만 복원된다.
-    const historyThread = thread;
-    fetch(`/history?thread_id=${encodeURIComponent(historyThread)}`).then(r => r.json()).then(h => {
-      // 불러오는 사이 새 질문을 보냈거나 새 대화를 시작했으면 화면을 덮어쓰지 않는다
-      if (log.value.length || thread !== historyThread) return;
-      log.value = h.messages.map(m => ({ id: nextId++, kind: m.role === 'user' ? 'user' : 'agent', text: m.content }));
-      scrollToBottom();
-    }).catch(() => {});
+    function loadHistory() {
+      const historyThread = thread;
+      fetch(`/history?thread_id=${encodeURIComponent(historyThread)}`).then(r => r.json()).then(h => {
+        // 불러오는 사이 새 질문을 보냈거나 다른 대화로 바꿨으면 화면을 덮어쓰지 않는다
+        if (log.value.length || thread !== historyThread) return;
+        log.value = h.messages.map(m => ({ id: nextId++, kind: m.role === 'user' ? 'user' : 'agent', text: m.content }));
+        scrollToBottom();
+      }).catch(() => {});
+    }
+    loadHistory();
+
+    // 새 대화로 넘어간 뒤에도 서버에 남은 지난 대화를 다시 열 수 있게 사이드바에 보여준다.
+    // threadsOpen은 좁은 화면에서 사이드바를 꺼냈는지만 나타낸다.
+    const threadsOpen = ref(false);
+    const threads = ref([]);
+    const isCurrent = id => id === thread;
+    function refreshThreads() {
+      fetch('/threads').then(r => r.json()).then(t => { threads.value = t.threads; })
+        .catch(() => { threads.value = null; });
+    }
+    refreshThreads();
+
+    function switchThread(id) {
+      thread = id;
+      try { localStorage.setItem('chat-thread-id', thread); } catch {}
+      log.value = [];
+      input.value = '';
+      threadsOpen.value = false;
+    }
+
+    function openThread(id) {
+      if (id === thread) { threadsOpen.value = false; return; }
+      switchThread(id);
+      loadHistory();
+    }
 
     // 입력창은 내용만큼 늘어나되 CSS max-height에서 멈추고, 그 뒤로는 안에서 스크롤한다.
     // 타이핑뿐 아니라 보내기 후 비우기·예시 버튼 등 코드로 값이 바뀔 때도 높이를 맞춘다.
@@ -359,7 +429,7 @@ createApp({
       let choices = [];
 
       es.onmessage = (event) => {
-        if (event.data === '[DONE]') { es.close(); sending.value = false; stepsItem.finished = true; return; }
+        if (event.data === '[DONE]') { es.close(); sending.value = false; stepsItem.finished = true; refreshThreads(); return; }
         let e;
         try { e = JSON.parse(event.data); } catch { return; }
 
@@ -434,13 +504,11 @@ createApp({
 
     // 이전 대화는 서버에 그대로 남고, 새 thread_id로 빈 대화를 시작한다.
     function newChat() {
-      thread = newThread();
-      try { localStorage.setItem('chat-thread-id', thread); } catch {}
-      log.value = [];
-      input.value = '';
+      switchThread(newThread());
     }
 
-    return { backend, log, input, sending, logEl, inputEl, onEnter, onSubmit, chooseTarget, retry, ask, newChat, renderMarkdown, EXAMPLES };
+    return { backend, log, input, sending, logEl, inputEl, onEnter, onSubmit, chooseTarget, retry, ask, newChat,
+             threadsOpen, threads, isCurrent, openThread, renderMarkdown, EXAMPLES };
   },
 }).mount('#app');
 </script>
