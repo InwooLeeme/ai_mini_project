@@ -24,3 +24,6 @@ __pycache__/
 
 # 사용자 규칙: 계획 문서는 커밋하지 않는다.
 /docs/superpowers/plans/
+
+# 평가 실행 결과·소스 스냅샷·추적·세션 DB는 공유하지 않는다.
+/evaluation/results/
